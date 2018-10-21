@@ -1,0 +1,37 @@
+bug列表:
+-------------------------------------------------------------------------------------------------
+1.驱动编译成.ko bug
+rk sensor core架构(即input/sensors目录下的文件)只能将各个sensor驱动编译入内核(.o)
+编成.ko的话启动时有如下log:
+[    2.038964] i2c i2c-4: sensor_probe: ak8963,ffffffc07c4a0800
+[    2.039609] sensors 4-000c: sensor_chip_init:ops is null,sensor name is ak8963
+[    2.040299] i2c i2c-4: sensor_probe failed -1
+     ops是各个sensor驱动通过sensor_register_slave接口填入的。驱动是.ko的话在kernel启动初期就找不到相关的ops了。
+     不过，当kernel启动完毕后将该.ko insmod进入后不能唤醒rk sensor core的probe函数。
+所以，rk sensor core不支持驱动编成ko。
+-------------------------------------------------------------------------------------------------
+
+2.同种类型多个sensor装入内核时发生类型(同名杂项设备)冲突bug
+[    2.055473] ===============sensor type:3=================
+[    2.056003] sysfs: cannot create duplicate filename '/class/misc/compass'
+[    2.056653] ------------[ cut here ]------------
+[    2.057063] WARNING: at fs/sysfs/dir.c:31
+[    2.057424] Modules linked in:
+[    2.057707] 
+[    2.057857] CPU: 0 PID: 1 Comm: swapper/0 Not tainted 4.4.154 #4
+[    2.058391] Hardware name: Rockchip RK3399 Excavator Board (Linux Opensource) (DT)
+[    2.059063] task: ffffffc000280000 task.stack: ffffffc00a3dc000
+[    2.059593] PC is at sysfs_warn_dup+0x64/0x88
+[    2.059980] LR is at sysfs_warn_dup+0x64/0x88
+	...................
+[    2.194357] sensors 4-001e: fail to register misc device compass
+[    2.194960] sensors 4-001e: fail to register misc device compass
+[    2.195536] i2c i2c-4: sensor_probe failed -17
+-------------------------------------------------------------------------------------------------
+
+3.电子罗盘compass驱动装入内核时会出现重复杂项设备bug
+[root@rk3399:/]# ls /sys/class/misc/
+akm8963_dev       	//在它的驱动里(akm8963.c sensor_init)生成的
+compass		//rk sensor core在sensor_probe-->sensor_misc_device_register生成的
+
+

@@ -1,0 +1,24 @@
+bug解决列表:
+==============================================================
+问题2、3：
+#问题2：思路
+    struct sensor_private_data有一个misc_dev字段，我们可以利用这个字段来想rk sensor core自定义misc。
+sensor core在sensor_misc_device_register函数中申请misc dev时识别下sensor drv有无填充上文所说的misc_dev字段，
+如果有填充就用misc_dev字段来注册杂项设备，没有的话就用系统为该类型sensor提供的通用ops.(其实系统通用ops，真正有用的是ioctl)。
+    这样，既能让具体sensor驱动选择自己的ioctl提供给上层、又能选择用系统通用的ioctl提供给上层。
+    同时地，将compass目录下地电子罗盘驱动中的.init字段钩子函数的misc_register代码行去掉。
+
+#问题3：思路
+   "commpass"加序号就好了。
+具体是commpass0、commpass1、accel0
+最终效果：
+1.假如系统当前只有一个compass类设备(ak8963)，那么经过改良后的架构为：
+misc
+|__commpass-0(这个名字是ak8963.c的compass_akm8963_ops .name字段)
+--------------------------------------------------------------------------------------------------
+2.假如系统当前有两个个compass类设备(ak8963、ak8975)，那么经过改良后的架构为：
+misc
+|__commpass0(这个名字是ak8963.c的compass_akm8963_ops .name字段)
+|__commpass1
+
+==============================================================
