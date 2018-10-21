@@ -306,22 +306,23 @@ static int sensor_report_value(struct i2c_client *client)
 	return ret;
 }
 
+/* 下面的字段不应该用hard code方式,应该从设备树上取下来,参考allwinner的sensor core就比较好了 */
 struct sensor_operate gsensor_lsm303d_ops = {
-	.name			= "lsm303d",
-	.type			= SENSOR_TYPE_ACCEL,
-	.id_i2c			= ACCEL_ID_LSM303D,
-	.read_reg			= (LSM303D_OUT_X_L | 0x80),
+	.name			= "lsm303d",	//芯片名字
+	.type			= SENSOR_TYPE_ACCEL,	//sensor类型
+	.id_i2c			= ACCEL_ID_LSM303D,		//sensor的身份(在注册进sensor core时该字段会和sensor-dev.h enum sensor_id做验证)
+	.read_reg			= (LSM303D_OUT_X_L | 0x80),//提供一个sensor器件内部寄存器,让系统读一下看能不能工作.
 	.read_len			= 6,
-	.id_reg			= LSM303D_WHO_AM_I,
-	.id_data			= LSM303D_DEVID,
-	.precision			= LSM303D_PRECISION,
-	.ctrl_reg			= LSM303D_CTRL_REG1,
-	.int_status_reg	= LSM303D_IG_SRC1,
-	.range			= {-LSM303D_RANGE, LSM303D_RANGE},
-	.trig				= (IRQF_TRIGGER_LOW | IRQF_ONESHOT),
-	.active			= sensor_active,
-	.init				= sensor_init,
-	.report			= sensor_report_value,
+	.id_reg			= LSM303D_WHO_AM_I,		//获取CHIP_ID寄存器的地址
+	.id_data			= LSM303D_DEVID,	//正确的CHIP_ID值
+	.precision			= LSM303D_PRECISION,//数据的精度{-2^(LSM303D_PRECISION-1), 2^(LSM303D_PRECISION-1)}
+	.ctrl_reg			= LSM303D_CTRL_REG1,//sensor控制寄存器的地址,一般用于开启和关闭设备、初始化等.
+	.int_status_reg	= LSM303D_IG_SRC1,		//器件的中断控制寄存器地址,不需要填-1.
+	.range			= {-LSM303D_RANGE, LSM303D_RANGE},//数据上报给应用层的范围
+	.trig				= (IRQF_TRIGGER_LOW | IRQF_ONESHOT),//中断触发方式
+	.active			= sensor_active,	//器件开关的钩子函数
+	.init				= sensor_init,	//器件初始化的钩子函数
+	.report			= sensor_report_value,//器件读数据和上报数据钩子
 };
 
 

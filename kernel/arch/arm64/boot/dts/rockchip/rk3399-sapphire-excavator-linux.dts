@@ -471,9 +471,9 @@
 		rockchip,camera-module-mipi-dphy-index = <1>;
 	};
 	
-	ak8963: ak8963@0c{
+	akm8963: akm8963@0c{
 		status = "okay";
-		compatible = "ak8963";
+		compatible = "akm8963";
 		reg = <0x0c>;
 		dady-gpio = <&gpio1 4 GPIO_ACTIVE_LOW>;	//器件准备脚
 		type = <3>;	//电子罗盘compass在rk sensors core层的类型编号(dt-bindings/sensor-dev.h)

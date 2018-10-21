@@ -31,6 +31,7 @@
 #endif
 #include <linux/sensor-dev.h>
 
+#define en_private_misc   0
 #define SENSOR_DATA_SIZE	9
 #define YPR_DATA_SIZE		16
 #define RWBUF_SIZE			16
@@ -98,8 +99,12 @@
 #define ECS_IOCTL_GET_DELAY			_IOR(COMPASS_IOCTL_MAGIC, 0x30, short)
 
 #define AK09911_DEVICE_ID				0x05
-static struct i2c_client *this_client;
+
+#if en_private_misc
 static struct miscdevice compass_dev_device;
+static struct miscdevice compass_dev_device;
+#endif
+static struct i2c_client *this_client;
 
 static int g_akm_rbuf_ready;
 static int g_akm_rbuf[12];
@@ -140,12 +145,6 @@ static int sensor_init(struct i2c_client *client)
 	}
 
 	sensor->status_cur = SENSOR_OFF;
-
-	result = misc_register(&compass_dev_device);
-	if (result < 0) {
-		pr_err("%s:fail to register misc device %s\n", __func__, compass_dev_device.name);
-		result = -1;
-	}
 
 	g_sensor_info[0] = AK09911_REG_WIA1;
 	result = sensor_rx_data(client, g_sensor_info, AK09911_INFO_SIZE);
@@ -264,6 +263,7 @@ static int sensor_report_value(struct i2c_client *client)
 	return ret;
 }
 
+#if en_private_misc
 static void compass_set_YPR(int *rbuf)
 {
 	/* No events are reported */
@@ -274,16 +274,6 @@ static void compass_set_YPR(int *rbuf)
 
 	g_akm_rbuf_ready = 1;
 	memcpy(g_akm_rbuf, rbuf, 12 * sizeof(int));
-}
-
-static int compass_dev_open(struct inode *inode, struct file *file)
-{
-	return 0;
-}
-
-static int compass_dev_release(struct inode *inode, struct file *file)
-{
-	return 0;
 }
 
 static int compass_akm_set_mode(struct i2c_client *client, char mode)
@@ -382,6 +372,16 @@ static int compass_akm_get_closestatus(void)
 	wait_event_interruptible(sensor->flags.open_wq, (atomic_read(&sensor->flags.open_flag) <= 0));
 
 	return atomic_read(&sensor->flags.open_flag);
+}
+
+static int compass_dev_open(struct inode *inode, struct file *file)
+{
+	return 0;
+}
+
+static int compass_dev_release(struct inode *inode, struct file *file)
+{
+	return 0;
 }
 
 /* ioctl - I/O control */
@@ -607,9 +607,11 @@ static const struct file_operations compass_dev_fops = {
 
 static struct miscdevice compass_dev_device = {
 	.minor = MISC_DYNAMIC_MINOR,
-	.name = "akm_dev",
+	.name = "akm09911_dev",
 	.fops = &compass_dev_fops,
 };
+#endif
+
 
 struct sensor_operate compass_akm09911_ops = {
 	.name				= "akm09911",
@@ -627,7 +629,11 @@ struct sensor_operate compass_akm09911_ops = {
 	.active				= sensor_active,
 	.init					= sensor_init,
 	.report				= sensor_report_value,
+#if en_private_misc
+	.misc_dev			= &compass_dev_device,
+#else
 	.misc_dev			= NULL,
+#endif
 };
 
 /****************operate according to sensor chip:end************/

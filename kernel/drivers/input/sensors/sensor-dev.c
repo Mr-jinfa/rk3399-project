@@ -49,8 +49,8 @@ struct sensor_calibration_data {
 	u8 is_gyro_calibrated;
 };
 
-static struct sensor_private_data *g_sensor[SENSOR_NUM_TYPES];
-static struct sensor_operate *sensor_ops[SENSOR_NUM_ID];
+static struct sensor_private_data *g_sensor[SENSOR_NUM_TYPES];	//注册进sensor core的具体sensor
+static struct sensor_operate *sensor_ops[SENSOR_NUM_ID];	//具体sensor的sops,供给sensor core用的
 static int sensor_probe_times[SENSOR_NUM_ID];
 static struct class *sensor_class;
 static struct sensor_calibration_data sensor_cali_data;
@@ -472,6 +472,9 @@ static int sensor_chip_init(struct i2c_client *client)
 		result = -2;
 		goto error;
 	}
+	
+	/*add by jinfa 将该sensor的ops提取出来并赋给sensor core的sensor->ops*/
+	sensor->ops = ops;
 	return 0;
 
 error:
@@ -1408,9 +1411,13 @@ static long pressure_dev_ioctl(struct file *file,
 static int sensor_misc_device_register(struct sensor_private_data *sensor, int type)
 {
 	int result = 0;
+	static atomic_t sensor_no[SENSOR_TYPE_HALL] = {ATOMIC_INIT(-1)};
+	char *misc_name = kmalloc(32, GFP_KERNEL);
+
 
 	switch (type) {
 	case SENSOR_TYPE_ANGLE:
+	
 		if (!sensor->ops->misc_dev) {
 			sensor->fops.owner = THIS_MODULE;
 			sensor->fops.unlocked_ioctl = angle_dev_ioctl;
@@ -1418,7 +1425,9 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = angle_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sensor->miscdev.name = "angle";
+			
+			sprintf(misc_name, "angle_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_ANGLE])));
+			sensor->miscdev.name = misc_name;
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
@@ -1436,7 +1445,9 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = gsensor_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sensor->miscdev.name = "mma8452_daemon";
+			sprintf(misc_name, "accel_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_ACCEL])));
+			sensor->miscdev.name = misc_name;
+
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
@@ -1454,7 +1465,9 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = compass_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sensor->miscdev.name = "compass";
+			sprintf(misc_name, "compass_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_COMPASS])));
+			sensor->miscdev.name = misc_name;
+
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
@@ -1469,7 +1482,9 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = gyro_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sensor->miscdev.name = "gyrosensor";
+			sprintf(misc_name, "gyro_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_GYROSCOPE])));
+			sensor->miscdev.name = misc_name;
+
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
@@ -1487,7 +1502,9 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = light_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sensor->miscdev.name = "lightsensor";
+			sprintf(misc_name, "l_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_LIGHT])));
+			sensor->miscdev.name = misc_name;
+
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
@@ -1505,7 +1522,9 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = proximity_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sensor->miscdev.name = "psensor";
+			sprintf(misc_name, "p_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_PROXIMITY])));
+			sensor->miscdev.name = misc_name;
+
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
@@ -1520,7 +1539,9 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = temperature_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sensor->miscdev.name = "temperature";
+			sprintf(misc_name, "temper_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_TEMPERATURE])));
+			sensor->miscdev.name = misc_name;
+
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
@@ -1535,7 +1556,9 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = pressure_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sensor->miscdev.name = "pressure";
+			sprintf(misc_name, "presuer_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_PRESSURE])));
+			sensor->miscdev.name = misc_name;
+
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
@@ -1549,14 +1572,15 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 	}
 
 	sensor->miscdev.parent = &sensor->client->dev;
-	result = misc_register(&sensor->miscdev);
+	result = misc_register(&sensor->miscdev);	//misc_class
 	if (result < 0) {
 		dev_err(&sensor->client->dev,
 			"fail to register misc device %s\n", sensor->miscdev.name);
 		goto error;
 	}
 	dev_info(&sensor->client->dev, "%s:miscdevice: %s\n", __func__, sensor->miscdev.name);
-
+	printk("===============sensor type:%d register in rockchip sensor core=================\n", type);
+	kfree(misc_name);
 error:
 	return result;
 }
@@ -1572,6 +1596,8 @@ int sensor_register_slave(int type, struct i2c_client *client,
 		printk(KERN_ERR "%s:%s id is error %d\n", __func__, ops->name, ops->id_i2c);
 		return -1;
 	}
+/*将该类型的sensor_operate填入静态的sensor core使用的数组中.
+sensor_ops用来存放所有具体sensor的sops,这些ops是供给sensor core用的*/
 	sensor_ops[ops->id_i2c] = ops;
 	sensor_probe_times[ops->id_i2c] = 0;
 
@@ -1579,6 +1605,8 @@ int sensor_register_slave(int type, struct i2c_client *client,
 
 	return result;
 }
+
+
 
 int sensor_unregister_slave(int type, struct i2c_client *client,
 			struct sensor_platform_data *slave_pdata,
@@ -1597,10 +1625,13 @@ int sensor_unregister_slave(int type, struct i2c_client *client,
 	return result;
 }
 
+
+
 int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 {
+	//查找挂到该i2c总线下的client(由各种sensor硬件模拟出来的)
 	struct sensor_private_data *sensor =
-	    (struct sensor_private_data *) i2c_get_clientdata(client);
+		(struct sensor_private_data *) i2c_get_clientdata(client);	//这个语句多余?
 	struct sensor_platform_data *pdata;
 	struct device_node *np = client->dev.of_node;
 	enum of_gpio_flags rst_flags, pwr_flags;
@@ -1624,12 +1655,13 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 		result = -ENOMEM;
 		goto out_no_free;
 	}
+/*申请一个sensor结构体(类对象)*/
 	sensor = devm_kzalloc(&client->dev, sizeof(*sensor), GFP_KERNEL);
 	if (!sensor) {
 		result = -ENOMEM;
 		goto out_no_free;
 	}
-
+/*从设备树上获取硬件信息*/
 	of_property_read_u32(np, "type", &(pdata->type));
 
 	pdata->irq_pin = of_get_named_gpio_flags(np, "irq-gpio", 0, (enum of_gpio_flags *)&irq_flags);
@@ -1651,7 +1683,7 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 
 	of_property_read_u32(np, "power-off-in-suspend",
 			     &pdata->power_off_in_suspend);
-
+/*当前器件默认那种pcb布局*/
 	switch (pdata->layout) {
 	case 1:
 		pdata->orientation[0] = 1;
@@ -1795,6 +1827,7 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 		result = -EFAULT;
 		goto out_no_free;
 	}
+/*将sensor绑定到由硬件模拟出来的client上(这样可以粗略理解为sensor就是client)*/
 	i2c_set_clientdata(client, sensor);
 	sensor->client = client;
 	sensor->pdata = pdata;
@@ -1823,7 +1856,7 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 	sensor->axis.x = 0;
 	sensor->axis.y = 0;
 	sensor->axis.z = 0;
-
+/*检查该sensor合法性、根据不同的sensor调用它自身的init字段所挂的函数*/
 	result = sensor_chip_init(sensor->client);
 	if (result < 0) {
 		if (reprobe_en && (result == -2)) {
@@ -1833,7 +1866,8 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 		}
 		goto out_free_memory;
 	}
-
+	
+/*这个就是做input dev工作了*/
 	sensor->input_dev = devm_input_allocate_device(&client->dev);
 	if (!sensor->input_dev) {
 		result = -ENOMEM;
@@ -1935,7 +1969,7 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 			"Unable to register input device %s\n", sensor->input_dev->name);
 		goto out_input_register_device_failed;
 	}
-
+/*根据具体sensor硬件属性申请相应的中断*/
 	result = sensor_irq_init(sensor->client);
 	if (result) {
 		dev_err(&client->dev,
@@ -1951,7 +1985,7 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 		goto out_misc_device_register_device_failed;
 	}
 
-	g_sensor[type] = sensor;
+	g_sensor[type] = sensor;	//注册成功后填入静态的sensor core数组,供ioctl等函数使用.
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	if ((sensor->ops->suspend) && (sensor->ops->resume)) {
@@ -1962,7 +1996,7 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 	}
 #endif
 
-	dev_info(&client->dev, "%s:initialized ok,sensor name:%s,type:%d,id=%d\n\n", __func__, sensor->ops->name, type, (int)sensor->i2c_id->driver_data);
+	dev_info(&client->dev, "%s:initialized end ok,sensor name:%s,type:%d,id=%d\n\n", __func__, sensor->ops->name, type, (int)sensor->i2c_id->driver_data);
 
 	return result;
 
@@ -2023,9 +2057,9 @@ static const struct i2c_device_id sensor_id[] = {
 	{"gs_stk8baxx", ACCEL_ID_STK8BAXX},
 	/*compass*/
 	{"compass", COMPASS_ID_ALL},
-	{"ak8975", COMPASS_ID_AK8975},
-	{"ak8963", COMPASS_ID_AK8963},
-	{"ak09911", COMPASS_ID_AK09911},
+	{"akm8975", COMPASS_ID_AK8975},
+	{"akm8963", COMPASS_ID_AK8963},
+	{"akm09911", COMPASS_ID_AK09911},
 	{"mmc314x", COMPASS_ID_MMC314X},
 	/*gyroscope*/
 	{"gyro", GYRO_ID_ALL},
@@ -2077,9 +2111,9 @@ static struct of_device_id sensor_dt_ids[] = {
 	{ .compatible = "bma2xx_acc" },
 	{ .compatible = "gs_stk8baxx" },
 	/*compass*/
-	{ .compatible = "ak8975" },
-	{ .compatible = "ak8963" },
-	{ .compatible = "ak09911" },
+	{ .compatible = "akm8975" },
+	{ .compatible = "akm8963" },
+	{ .compatible = "akm09911" },
 	{ .compatible = "mmc314x" },
 
 	/* gyroscop*/

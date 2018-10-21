@@ -268,3 +268,4 @@ static void __exit gsensor_lsm330_exit(void)
 
 module_init(gsensor_lsm330_init);
 module_exit(gsensor_lsm330_exit);
+

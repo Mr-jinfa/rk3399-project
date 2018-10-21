@@ -31,7 +31,7 @@
 #endif
 
 #include <linux/sensor-dev.h>
-
+#define en_private_misc   0
 #define SENSOR_DATA_SIZE		8
 
 
@@ -104,9 +104,11 @@ Defines a read-only address of the fuse ROM of the AK8975.*/
 
 
 #define AK8975_DEVICE_ID		0x48
-static struct i2c_client *this_client;
-static struct miscdevice compass_dev_device;
 
+#if en_private_misc
+static struct miscdevice compass_dev_device;
+#endif
+static struct i2c_client *this_client;
 
 
 
@@ -118,9 +120,9 @@ static int sensor_active(struct i2c_client *client, int enable, int rate)
 	    (struct sensor_private_data *) i2c_get_clientdata(client);
 	int result = 0;
 
-	//sensor->ops->ctrl_data = sensor_read_reg(client, sensor->ops->ctrl_reg);
+	sensor->ops->ctrl_data = sensor_read_reg(client, sensor->ops->ctrl_reg);
 
-	//register setting according to chip datasheet
+	// setting according to chip datasheet
 	if(enable)
 	{
 		sensor->ops->ctrl_data = AK8975_MODE_SNG_MEASURE;
@@ -147,7 +149,7 @@ static int sensor_init(struct i2c_client *client)
 	int info = 0;
 
 	this_client = client;
-
+//sensor->ops->active:设置电子罗盘芯片工作状态
 	result = sensor->ops->active(client,0,0);
 	if(result)
 	{
@@ -163,12 +165,6 @@ static int sensor_init(struct i2c_client *client)
 	{
 		printk("%s:info=0x%x,it is not %s\n",__func__, info, sensor->ops->name);
 		return -1;
-	}
-
-	result = misc_register(&compass_dev_device);
-	if (result < 0) {
-		printk("%s:fail to register misc device %s\n", __func__, compass_dev_device.name);
-		result = -1;
 	}
 
 	DBG("%s:status_cur=%d\n",__func__, sensor->status_cur);
@@ -273,12 +269,14 @@ static int sensor_report_value(struct i2c_client *client)
 	return ret;
 }
 
+#if en_private_misc
+
 static void compass_set_YPR(short *rbuf)
 {
 	struct sensor_private_data *sensor =
 	    (struct sensor_private_data *) i2c_get_clientdata(this_client);
 
-	/* Report magnetic sensor information */
+	/* Report magnetic sensor information 陀螺仪*/
 	if (atomic_read(&sensor->flags.m_flag)) {
 		input_report_abs(sensor->input_dev, ABS_RX, rbuf[0]);
 		input_report_abs(sensor->input_dev, ABS_RY, rbuf[1]);
@@ -287,7 +285,7 @@ static void compass_set_YPR(short *rbuf)
 		DBG("%s:m_flag:x=%d,y=%d,z=%d,RUDDER=%d\n",__func__,rbuf[0], rbuf[1], rbuf[2], rbuf[4]);
 	}
 
-	/* Report acceleration sensor information */
+	/* Report acceleration sensor information 加速度计*/
 	if (atomic_read(&sensor->flags.a_flag)) {
 		input_report_abs(sensor->input_dev, ABS_X, rbuf[6]);
 		input_report_abs(sensor->input_dev, ABS_Y, rbuf[7]);
@@ -297,7 +295,7 @@ static void compass_set_YPR(short *rbuf)
 		DBG("%s:a_flag:x=%d,y=%d,z=%d,WHEEL=%d\n",__func__,rbuf[6], rbuf[7], rbuf[8], rbuf[5]);
 	}
 
-	/* Report magnetic vector information */
+	/* Report magnetic vector information 电磁传感器*/
 	if (atomic_read(&sensor->flags.mv_flag)) {
 		input_report_abs(sensor->input_dev, ABS_HAT0X, rbuf[9]);
 		input_report_abs(sensor->input_dev, ABS_HAT0Y, rbuf[10]);
@@ -308,16 +306,6 @@ static void compass_set_YPR(short *rbuf)
 
 	input_sync(sensor->input_dev);
 }
-
-
-static int compass_dev_open(struct inode *inode, struct file *file)
-{
-	int result = 0;
-	DBG("%s\n",__func__);
-
-	return result;
-}
-
 
 static int compass_dev_release(struct inode *inode, struct file *file)
 {
@@ -421,6 +409,14 @@ static int compass_akm_get_closestatus(void)
 	return atomic_read(&sensor->flags.open_flag);
 }
 
+
+static int compass_dev_open(struct inode *inode, struct file *file)
+{
+	int result = 0;
+	DBG("%s\n",__func__);
+
+	return result;
+}
 
 /* ioctl - I/O control */
 static long compass_dev_ioctl(struct file *file,
@@ -595,13 +591,13 @@ static struct file_operations compass_dev_fops =
 	.unlocked_ioctl = compass_dev_ioctl,
 };
 
-
 static struct miscdevice compass_dev_device =
 {
 	.minor = MISC_DYNAMIC_MINOR,
 	.name = "akm8975_dev",
 	.fops = &compass_dev_fops,
 };
+#endif
 
 struct sensor_operate compass_akm8975_ops = {
 	.name				= "akm8975",
@@ -611,7 +607,7 @@ struct sensor_operate compass_akm8975_ops = {
 	.read_len			= SENSOR_DATA_SIZE,	//data length
 	.id_reg				= AK8975_REG_WIA,	//read id
 	.id_data 			= AK8975_DEVICE_ID,
-	.precision			= 8,			//12 bits
+	.precision			= 8,			//8 bits
 	.ctrl_reg 			= AK8975_REG_CNTL,	//enable or disable
 	.int_status_reg			= SENSOR_UNKNOW_DATA,	//not exist
 	.range				= {-0xffff,0xffff},
@@ -619,7 +615,11 @@ struct sensor_operate compass_akm8975_ops = {
 	.active				= sensor_active,
 	.init				= sensor_init,
 	.report				= sensor_report_value,
-	.misc_dev 			= NULL,			//private misc support
+#if en_private_misc
+	.misc_dev			= &compass_dev_device,
+#else
+	.misc_dev			= NULL,
+#endif
 };
 
 /****************operate according to sensor chip:end************/

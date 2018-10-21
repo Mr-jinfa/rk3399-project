@@ -30,6 +30,7 @@
 #include <linux/earlysuspend.h>
 #endif
 #include <linux/sensor-dev.h>
+#define en_private_misc   0
 
 #define AKM_SENSOR_INFO_SIZE	2
 #define AKM_SENSOR_CONF_SIZE	3
@@ -101,8 +102,9 @@
 
 #define AK8963_DEVICE_ID				0x48
 static struct i2c_client *this_client;
+#if en_private_misc
 static struct miscdevice compass_dev_device;
-
+#endif
 static int g_akm_rbuf_ready;
 static int g_akm_rbuf[12];
 
@@ -147,12 +149,6 @@ static int sensor_init(struct i2c_client *client)
 	if ((info & (0x0f << 3)) != AK8963_INFO_DATA) {
 		pr_err("%s:info=0x%x,it is not %s\n", __func__, info, sensor->ops->name);
 		return -1;
-	}
-
-	result = misc_register(&compass_dev_device);
-	if (result < 0) {
-		pr_err("%s:fail to register misc device %s\n", __func__, compass_dev_device.name);
-		result = -1;
 	}
 
 	return result;
@@ -286,6 +282,7 @@ static int sensor_report_value(struct i2c_client *client)
 	return ret;
 }
 
+#if en_private_misc
 static void compass_set_YPR(int *rbuf)
 {
 	/* No events are reported */
@@ -296,16 +293,6 @@ static void compass_set_YPR(int *rbuf)
 
 	g_akm_rbuf_ready = 1;
 	memcpy(g_akm_rbuf, rbuf, 12 * sizeof(int));
-}
-
-static int compass_dev_open(struct inode *inode, struct file *file)
-{
-	return 0;
-}
-
-static int compass_dev_release(struct inode *inode, struct file *file)
-{
-	return 0;
 }
 
 static int compass_akm_set_mode(struct i2c_client *client, char mode)
@@ -405,6 +392,16 @@ static int compass_akm_get_closestatus(void)
 	wait_event_interruptible(sensor->flags.open_wq, (atomic_read(&sensor->flags.open_flag) <= 0));
 
 	return atomic_read(&sensor->flags.open_flag);
+}
+
+static int compass_dev_open(struct inode *inode, struct file *file)
+{
+	return 0;
+}
+
+static int compass_dev_release(struct inode *inode, struct file *file)
+{
+	return 0;
 }
 
 /* ioctl - I/O control */
@@ -657,6 +654,7 @@ static struct miscdevice compass_dev_device = {
 	.name = "akm8963_dev",
 	.fops = &compass_dev_fops,
 };
+#endif
 
 struct sensor_operate compass_akm8963_ops = {
 	.name				= "akm8963",
@@ -674,7 +672,11 @@ struct sensor_operate compass_akm8963_ops = {
 	.active				= sensor_active,
 	.init					= sensor_init,
 	.report				= sensor_report_value,
+#if en_private_misc
+	.misc_dev			= &compass_dev_device,
+#else
 	.misc_dev			= NULL,
+#endif
 };
 
 /****************operate according to sensor chip:end************/
@@ -705,3 +707,4 @@ static void __exit compass_akm8963_exit(void)
 
 module_init(compass_akm8963_init);
 module_exit(compass_akm8963_exit);
+
