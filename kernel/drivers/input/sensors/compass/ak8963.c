@@ -656,6 +656,7 @@ static struct miscdevice compass_dev_device = {
 };
 #endif
 
+
 struct sensor_operate compass_akm8963_ops = {
 	.name				= "akm8963",
 	.type				= SENSOR_TYPE_COMPASS,
@@ -677,6 +678,7 @@ struct sensor_operate compass_akm8963_ops = {
 #else
 	.misc_dev			= NULL,
 #endif
+	.en_module_ko		= 1,
 };
 
 /****************operate according to sensor chip:end************/
@@ -707,4 +709,7 @@ static void __exit compass_akm8963_exit(void)
 
 module_init(compass_akm8963_init);
 module_exit(compass_akm8963_exit);
+MODULE_AUTHOR("JinFa Huang <2112201069@qq.com>");
+MODULE_DESCRIPTION("ak8963 driver");
+MODULE_LICENSE("GPL");
 

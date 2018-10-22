@@ -54,6 +54,7 @@ static struct sensor_operate *sensor_ops[SENSOR_NUM_ID];	//具体sensor的sops,�
 static int sensor_probe_times[SENSOR_NUM_ID];
 static struct class *sensor_class;
 static struct sensor_calibration_data sensor_cali_data;
+static struct i2c_driver sensor_driver;
 
 static int sensor_calibration_data_write(struct sensor_calibration_data *calibration_data)
 {
@@ -1589,24 +1590,35 @@ int sensor_register_slave(int type, struct i2c_client *client,
 			struct sensor_platform_data *slave_pdata,
 			struct sensor_operate *(*get_sensor_ops)(void))
 {
-	int result = 0;
+	int result = 0, error;
 	struct sensor_operate *ops = get_sensor_ops();
 
 	if ((ops->id_i2c >= SENSOR_NUM_ID) || (ops->id_i2c <= ID_INVALID)) {
 		printk(KERN_ERR "%s:%s id is error %d\n", __func__, ops->name, ops->id_i2c);
 		return -1;
 	}
-/*将该类型的sensor_operate填入静态的sensor core使用的数组中.
-sensor_ops用来存放所有具体sensor的sops,这些ops是供给sensor core用的*/
+
+	/*将该类型的sensor_operate填入静态的sensor core使用的数组中.
+	sensor_ops用来存放所有具体sensor的sops,这些ops是供给sensor core用的*/
 	sensor_ops[ops->id_i2c] = ops;
 	sensor_probe_times[ops->id_i2c] = 0;
+
+	/*如果当前sensor是module_ko的话就做一层i2c bus的match方法*/
+	if(ops->en_module_ko)
+	{
+		error = driver_attach(&sensor_driver.driver);
+		if (error)
+		{
+			printk("[%s] driver %s attach fail", __func__, ops->name);
+			return -1;
+		}
+	}
 
 	printk(KERN_INFO "%s:%s,id=%d\n", __func__, sensor_ops[ops->id_i2c]->name, ops->id_i2c);
 
 	return result;
 }
-
-
+EXPORT_SYMBOL(sensor_register_slave);
 
 int sensor_unregister_slave(int type, struct i2c_client *client,
 			struct sensor_platform_data *slave_pdata,
@@ -1624,8 +1636,7 @@ int sensor_unregister_slave(int type, struct i2c_client *client,
 
 	return result;
 }
-
-
+EXPORT_SYMBOL(sensor_unregister_slave);
 
 int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 {
@@ -1856,7 +1867,9 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 	sensor->axis.x = 0;
 	sensor->axis.y = 0;
 	sensor->axis.z = 0;
-/*检查该sensor合法性、根据不同的sensor调用它自身的init字段所挂的函数*/
+/*
+*检查该sensor合法性、根据不同的sensor调用它自身的init字段所挂的函数.
+*/
 	result = sensor_chip_init(sensor->client);
 	if (result < 0) {
 		if (reprobe_en && (result == -2)) {

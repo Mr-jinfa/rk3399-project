@@ -157,6 +157,7 @@ struct sensor_operate {
 	int (*suspend)(struct i2c_client *client);	//休眠操作接口
 	int (*resume)(struct i2c_client *client);	//唤醒操作接口
 	struct miscdevice *misc_dev;				//私用misc设备,sensor-dev.c驱动会检查该字段,如填写就不会替那个sensor注册misc dev
+	int en_module_ko;				//模块是否以ko形式装入.
 };
 
 /* Platform data for the sensor  同种类型sensor private data (由sensor_probe 1954行知)*/
