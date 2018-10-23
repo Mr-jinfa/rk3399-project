@@ -49,7 +49,13 @@ struct sensor_calibration_data {
 	u8 is_gyro_calibrated;
 };
 
-static struct sensor_private_data *g_sensor[SENSOR_NUM_TYPES];	//注册进sensor core的具体sensor
+struct core_sensor {
+	struct sensor_private_data *g_sensor[SENSOR_NUM_TYPES];	//注册进sensor core的同种类型sensor
+	u32 map[SENSOR_NUM_TYPES];		//sensor core中所有的sensor map,布局方式是map[0] 高16位表示类型编号,低16位表示当前有多少个sensor
+	
+};
+static struct core_sensor rkcore_sensor;
+
 static struct sensor_operate *sensor_ops[SENSOR_NUM_ID];	//具体sensor的sops,供给sensor core用的
 static int sensor_probe_times[SENSOR_NUM_ID];
 static struct class *sensor_class;
@@ -103,7 +109,7 @@ static ssize_t accel_calibration_show(struct class *class,
 		struct class_attribute *attr, char *buf)
 {
 	int ret;
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_ACCEL];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_ACCEL];
 
 	if (sensor == NULL)
 		return sprintf(buf, "no accel sensor find\n");
@@ -183,7 +189,7 @@ static int accel_do_calibration(struct sensor_private_data *sensor)
 static ssize_t accel_calibration_store(struct class *class,
 		struct class_attribute *attr, const char *buf, size_t count)
 {
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_ACCEL];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_ACCEL];
 	int val, ret;
 	int pre_status;
 
@@ -248,7 +254,7 @@ static ssize_t gyro_calibration_show(struct class *class,
 		struct class_attribute *attr, char *buf)
 {
 	int ret;
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_GYROSCOPE];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_GYROSCOPE];
 
 	if (sensor == NULL)
 		return sprintf(buf, "no gyro sensor find\n");
@@ -308,7 +314,7 @@ static int gyro_do_calibration(struct sensor_private_data *sensor)
 static ssize_t gyro_calibration_store(struct class *class,
 		struct class_attribute *attr, const char *buf, size_t count)
 {
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_GYROSCOPE];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_GYROSCOPE];
 	int val, ret;
 	int pre_status;
 
@@ -695,7 +701,7 @@ static int sensor_enable(struct sensor_private_data *sensor, int enable)
 static long angle_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_ANGLE];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_ANGLE];
 	struct i2c_client *client = sensor->client;
 	void __user *argp = (void __user *)arg;
 	struct sensor_axis axis = {0};
@@ -787,7 +793,7 @@ static int gsensor_dev_release(struct inode *inode, struct file *file)
 static long gsensor_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_ACCEL];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_ACCEL];
 	struct i2c_client *client = sensor->client;
 	void __user *argp = (void __user *)arg;
 	struct sensor_axis axis = {0};
@@ -884,7 +890,7 @@ error:
 
 static int compass_dev_open(struct inode *inode, struct file *file)
 {
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_COMPASS];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_COMPASS];
 	int result = 0;
 	int flag = 0;
 
@@ -899,7 +905,7 @@ static int compass_dev_open(struct inode *inode, struct file *file)
 
 static int compass_dev_release(struct inode *inode, struct file *file)
 {
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_COMPASS];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_COMPASS];
 	int result = 0;
 	int flag = 0;
 
@@ -969,7 +975,7 @@ static long compass_dev_compat_ioctl(struct file *file, unsigned int cmd, unsign
 static long compass_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_COMPASS];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_COMPASS];
 	struct i2c_client *client = sensor->client;
 	void __user *argp = (void __user *)arg;
 	int result = 0;
@@ -1058,7 +1064,7 @@ static int gyro_dev_release(struct inode *inode, struct file *file)
 static long gyro_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_GYROSCOPE];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_GYROSCOPE];
 	struct i2c_client *client = sensor->client;
 	void __user *argp = (void __user *)arg;
 	int result = 0;
@@ -1179,7 +1185,7 @@ static long light_dev_compat_ioctl(struct file *file, unsigned int cmd, unsigned
 static long light_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_LIGHT];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_LIGHT];
 	struct i2c_client *client = sensor->client;
 	void __user *argp = (void __user *)arg;
 	int result = 0;
@@ -1273,7 +1279,7 @@ static long proximity_dev_compat_ioctl(struct file *file, unsigned int cmd, unsi
 static long proximity_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_PROXIMITY];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_PROXIMITY];
 	void __user *argp = (void __user *)arg;
 	int result = 0;
 
@@ -1322,7 +1328,7 @@ static int temperature_dev_release(struct inode *inode, struct file *file)
 static long temperature_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_TEMPERATURE];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_TEMPERATURE];
 	void __user *argp = (void __user *)arg;
 	int result = 0;
 
@@ -1374,7 +1380,7 @@ static int pressure_dev_release(struct inode *inode, struct file *file)
 static long pressure_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = g_sensor[SENSOR_TYPE_PRESSURE];
+	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_PRESSURE];
 	void __user *argp = (void __user *)arg;
 	int result = 0;
 
@@ -1579,6 +1585,11 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			"fail to register misc device %s\n", sensor->miscdev.name);
 		goto error;
 	}
+/* 注册misc成功证明该sensor有效,具体sensor没有填充miscdec字段并且当前编入内核(因为编入内核不需要卸载),
+*那么该sensor->miscdev用来反向填充"具体sensor的私有字段 misc_dev"*/
+if((sensor->ops->misc_dev==NULL) && (sensor->ops->en_module_ko == 0))
+	sensor->ops->misc_dev = &sensor->miscdev;
+
 	dev_info(&sensor->client->dev, "%s:miscdevice: %s\n", __func__, sensor->miscdev.name);
 	printk("===============sensor type:%d register in rockchip sensor core=================\n", type);
 	kfree(misc_name);
@@ -1631,9 +1642,16 @@ int sensor_unregister_slave(int type, struct i2c_client *client,
 		printk(KERN_ERR "%s:%s id is error %d\n", __func__, ops->name, ops->id_i2c);
 		return -1;
 	}
-	printk(KERN_INFO "%s:%s,id=%d\n", __func__, sensor_ops[ops->id_i2c]->name, ops->id_i2c);
-	sensor_ops[ops->id_i2c] = NULL;
+/*如果具体sensor没有填充misc dev私有字段的话*/
+	if(ops->misc_dev == NULL)
+		ops->misc_dev = &rkcore_sensor.g_sensor[type]->miscdev;
 
+/*如果是module_ko的话还需要卸载对应的杂项设备*/
+	if(ops->en_module_ko)
+		misc_deregister(ops->misc_dev);
+	printk(KERN_INFO "%s:%s,id=%d\n", __func__, sensor_ops[ops->id_i2c]->name, ops->id_i2c);
+
+	sensor_ops[ops->id_i2c] = NULL;
 	return result;
 }
 EXPORT_SYMBOL(sensor_unregister_slave);
@@ -1991,6 +2009,7 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 	}
 
 	sensor->miscdev.parent = &client->dev;
+/* 该函数正确返回后,"推送到sensor core的misc"和"具体sensor的misc dev"一致(方便卸载)*/
 	result = sensor_misc_device_register(sensor, type);
 	if (result) {
 		dev_err(&client->dev,
@@ -1998,7 +2017,7 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 		goto out_misc_device_register_device_failed;
 	}
 
-	g_sensor[type] = sensor;	//注册成功后填入静态的sensor core数组,供ioctl等函数使用.
+	rkcore_sensor.g_sensor[type] = sensor;	//注册成功后填入静态的sensor core数组,供ioctl等函数使用.
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	if ((sensor->ops->suspend) && (sensor->ops->resume)) {
