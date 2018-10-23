@@ -13,10 +13,12 @@
  * GNU General Public License for more details.
  *
  *log:
- *2018.10.23 由于支持多个同类设备注册进系统,上层应用在调用[]sensor-type]_dev_loctl接口时
+ *2018.10.23pm 由于支持多个同类设备注册进系统,上层应用在调用[]sensor-type]_dev_loctl接口时
  *需要做两步:
  *1.将它调用设备的名字传进来如："compass0".以此来probe sensor 有无设备.(新增协议)
  *2.在上一步正确probe到后,正常的读值、管理.
+ -------------------------------------------------------------------------------------------
+ *2018.10.23light 将compass open、release函数实现的功能放到其ioctl做.
  */
 
 #include <linux/interrupt.h>
@@ -85,10 +87,12 @@ static int sensor_probe_times[SENSOR_NUM_ID];
 static struct class *sensor_class;
 static struct sensor_calibration_data sensor_cali_data;
 static struct i2c_driver sensor_driver;
+struct sensor_private_data *class_probe_accel = NULL;	//用于class_attr
+struct sensor_private_data *class_probe_gyro = NULL;	//用于class_attr
 
 
 /*
-*功能:根据sensor 操作符的name找到并返回具体misc dev
+*功能:根据sensor 操作符的name找到并返回具体sensor
 *找不到返回NULL
 */
 struct sensor_private_data *dev_name_entry(char *sensor_name, struct list_head *h_list)
@@ -100,9 +104,10 @@ struct sensor_private_data *dev_name_entry(char *sensor_name, struct list_head *
 	{
 		printk("=======%d=======\n", i++);
 		ptr = list_entry(pos, struct core_sensor_node, n_list);
-		printk("[dev_name_entry] name:%s\n", ptr->g_sensor->miscdev.name);
-		if(strcmp(ptr->g_sensor->miscdev.name, sensor_name) == 0)
+		if(strcmp(ptr->g_sensor->miscdev.name, sensor_name) == 0) {
+			printk("[dev_name_entry] probe name:%s\n", ptr->g_sensor->miscdev.name);
 			return ptr->g_sensor;
+		}
 	}
 	return NULL;
 }
@@ -155,7 +160,7 @@ static ssize_t accel_calibration_show(struct class *class,
 {
 	int ret;
 	/* 找出合适的sensor */
-	struct sensor_private_data *sensor = NULL;//node_sensor.g_sensor[SENSOR_TYPE_ACCEL];
+	struct sensor_private_data *sensor = class_probe_accel;
 
 	if (sensor == NULL)
 		return sprintf(buf, "no accel sensor find\n");
@@ -235,7 +240,7 @@ static int accel_do_calibration(struct sensor_private_data *sensor)
 static ssize_t accel_calibration_store(struct class *class,
 		struct class_attribute *attr, const char *buf, size_t count)
 {
-	struct sensor_private_data *sensor = NULL; //rkcore_sensor.g_sensor[SENSOR_TYPE_ACCEL];
+	struct sensor_private_data *sensor = class_probe_accel;
 	int val, ret;
 	int pre_status;
 
@@ -296,11 +301,49 @@ OUT:
 
 static CLASS_ATTR(accel_calibration, 0664, accel_calibration_show, accel_calibration_store);
 
+static ssize_t accel_dev_store(struct class *class,
+		struct class_attribute *attr, const char *buf, size_t count)
+{
+	int val, ret;
+	char device_name[32] = {0};
+	static int cnt=0;
+	printk("=====accel_dev_store:%d===========\n", cnt++);
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret) {
+		printk("%s: kstrtol error return %d\n", __func__, ret);
+		return -1;
+	}
+	if (val < 0) {
+		printk("%s: error value\n", __func__);
+		return -1;
+	}
+	//选择合适的gsensor设备
+	sprintf(device_name, "accel_sensor%d", val);
+	class_probe_accel = dev_name_entry(device_name, &head_sensor.h_list);
+	if(class_probe_accel == NULL)
+	{
+		printk("%s: sensor probe error\n", __func__);
+		goto OUT;
+	}
+
+	if(class_probe_accel->type != SENSOR_TYPE_ACCEL)
+	{
+		printk("%s: sensor type error\n", __func__);
+		class_probe_accel = NULL;
+		goto OUT;
+	}
+OUT:
+	return -1;
+}
+
+static CLASS_ATTR(accel_dev, 0664, NULL, accel_dev_store);
+
 static ssize_t gyro_calibration_show(struct class *class,
 		struct class_attribute *attr, char *buf)
 {
 	int ret;
-	struct sensor_private_data *sensor = NULL;//rkcore_sensor.g_sensor[SENSOR_TYPE_GYROSCOPE];
+	struct sensor_private_data *sensor = class_probe_gyro;
 
 	if (sensor == NULL)
 		return sprintf(buf, "no gyro sensor find\n");
@@ -360,7 +403,7 @@ static int gyro_do_calibration(struct sensor_private_data *sensor)
 static ssize_t gyro_calibration_store(struct class *class,
 		struct class_attribute *attr, const char *buf, size_t count)
 {
-	struct sensor_private_data *sensor = NULL;//rkcore_sensor.g_sensor[SENSOR_TYPE_GYROSCOPE];
+	struct sensor_private_data *sensor = class_probe_gyro;//rkcore_sensor.g_sensor[SENSOR_TYPE_GYROSCOPE];
 	int val, ret;
 	int pre_status;
 
@@ -422,6 +465,36 @@ OUT:
 
 static CLASS_ATTR(gyro_calibration, 0664, gyro_calibration_show, gyro_calibration_store);
 
+static ssize_t gyro_dev_store(struct class *class,
+		struct class_attribute *attr, const char *buf, size_t count)
+{
+	int val, ret;
+	char device_name[32] = {0};
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret) {
+		printk("%s: kstrtol error return %d\n", __func__, ret);
+		return -1;
+	}
+	if (val < 0) {
+		printk("%s: error value\n", __func__);
+		return -1;
+	}
+	//选择合适的gyro设备
+	sprintf(device_name, "gyro_sensor%d", val);
+	class_probe_gyro = dev_name_entry(device_name, &head_sensor.h_list);
+	if(class_probe_gyro->type != SENSOR_TYPE_GYROSCOPE)
+	{
+		printk("%s: sensor type error\n", __func__);
+		class_probe_gyro = NULL;
+		goto OUT;
+	}
+OUT:
+	return -1;
+}
+
+static CLASS_ATTR(gyro_dev, 0664, NULL, gyro_dev_store);
+
 static int sensor_class_init(void)
 {
 	int ret ;
@@ -436,6 +509,16 @@ static int sensor_class_init(void)
 	ret = class_create_file(sensor_class, &class_attr_gyro_calibration);
 	if (ret) {
 		printk(KERN_ERR "%s:Fail to creat gyro class file\n", __func__);
+		return ret;
+	}
+	ret = class_create_file(sensor_class, &class_attr_accel_dev);
+	if (ret) {
+		printk(KERN_ERR "%s:Fail to creat accl choose dev class file\n", __func__);
+		return ret;
+	}
+	ret = class_create_file(sensor_class, &class_attr_gyro_dev);
+	if (ret) {
+		printk(KERN_ERR "%s:Fail to creat gyro choose dev class file\n", __func__);
 		return ret;
 	}
 
@@ -1023,32 +1106,14 @@ error:
 
 static int compass_dev_open(struct inode *inode, struct file *file)
 {
-	struct sensor_private_data *sensor = NULL;//rkcore_sensor.g_sensor[SENSOR_TYPE_COMPASS];
-	int result = 0;
-	int flag = 0;
 
-	flag = atomic_read(&sensor->flags.open_flag);
-	if (!flag) {
-		atomic_set(&sensor->flags.open_flag, 1);
-		wake_up(&sensor->flags.open_wq);
-	}
-
-	return result;
+	return 0;
 }
 
 static int compass_dev_release(struct inode *inode, struct file *file)
 {
-	struct sensor_private_data *sensor = NULL;//rkcore_sensor.g_sensor[SENSOR_TYPE_COMPASS];
-	int result = 0;
-	int flag = 0;
 
-	flag = atomic_read(&sensor->flags.open_flag);
-	if (flag) {
-		atomic_set(&sensor->flags.open_flag, 0);
-		wake_up(&sensor->flags.open_wq);
-	}
-
-	return result;
+	return 0;
 }
 
 #ifdef CONFIG_COMPAT
@@ -1132,7 +1197,7 @@ static long compass_dev_ioctl(struct file *file,
 			if(copy_from_user(device_name, argp, 32)){
 					result = -EFAULT;
 					goto error;
-				}	
+			}
 			sensor = dev_name_entry(device_name, &head_sensor.h_list);
 			if(sensor == NULL)
 			{
@@ -1147,7 +1212,7 @@ static long compass_dev_ioctl(struct file *file,
 			printk("okay you can operate compass dev\n");
 			client = sensor->client;
 		}
-			
+
 		break;
 		default:
 			break;
@@ -1159,6 +1224,20 @@ static long compass_dev_ioctl(struct file *file,
 	}
 
 	switch (cmd) {
+/*..................................................................................................................*/
+	case ECS_IOCTL_APP_OPEN:	//open.
+		if (atomic_read(&sensor->flags.open_flag) == 0) {
+			atomic_set(&sensor->flags.open_flag, 1);
+			wake_up(&sensor->flags.open_wq);
+		}
+	break;
+	case ECS_IOCTL_APP_RELEASE:	//release.
+		if (atomic_read(&sensor->flags.open_flag) == 1) {
+			atomic_set(&sensor->flags.open_flag, 0);
+			wake_up(&sensor->flags.open_wq);
+		}
+	break;
+/*..................................................................................................................*/
 	case ECS_IOCTL_APP_SET_MFLAG:
 	case ECS_IOCTL_APP_SET_AFLAG:
 	case ECS_IOCTL_APP_SET_MVFLAG:
@@ -1995,8 +2074,8 @@ if(sensor->ops->misc_dev==NULL)
 
 	dev_info(&sensor->client->dev, "%s:miscdevice: %s\n", __func__, sensor->miscdev.name);
 	printk("===============sensor type:%d register in rockchip sensor core=================\n", type);
-	kfree(misc_name);
 error:
+	kfree(misc_name);
 	return result;
 }
 
@@ -2046,6 +2125,7 @@ int sensor_unregister_slave(int type, struct i2c_client *client,
 		return -1;
 	}
 
+	kfree(ops->misc_dev->name);	//释放由sensor_misc_device_register申请的misc_name
 /*如果是module_ko的话还需要卸载对应的杂项设备*/
 	if(ops->en_module_ko)
 		misc_deregister(ops->misc_dev);

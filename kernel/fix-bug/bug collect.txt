@@ -8,7 +8,7 @@ rk sensor core架构(即input/sensors目录下的文件)只能将各个sensor驱动编译入内核(.o
 [    2.040299] i2c i2c-4: sensor_probe failed -1
      ops是各个sensor驱动通过sensor_register_slave接口填入的。驱动是.ko的话在kernel启动初期就找不到相关的ops了。
      不过，当kernel启动完毕后将该.ko insmod进入后不能唤醒rk sensor core的probe函数。
-所以，rk sensor core不支持驱动编成ko。
+所以，rk sensor core不支持驱动编成ko，即不支持热启动。
 -------------------------------------------------------------------------------------------------
 
 2.同种类型多个sensor装入内核时发生类型(同名杂项设备)冲突bug

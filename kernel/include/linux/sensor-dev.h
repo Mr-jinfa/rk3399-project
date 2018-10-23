@@ -156,11 +156,10 @@ struct sensor_operate {
 	int (*report)(struct i2c_client *client);	//芯片读数据和上报数据钩子
 	int (*suspend)(struct i2c_client *client);	//休眠操作接口
 	int (*resume)(struct i2c_client *client);	//唤醒操作接口
-	struct miscdevice *misc_dev;				//私用misc设备,sensor-dev.c驱动会检查该字段,如填写就不会替那个sensor注册misc dev
+	struct miscdevice *misc_dev;				//私用misc设备,sensor-dev.c驱动会检查该字段,如填写就不会替那个sensor注册misc dev,不过最终会被反向填充.
 	int en_module_ko;				//模块是否以ko形式装入,1以模块装入.
 };
 
-/* Platform data for the sensor  同种类型sensor private data (由sensor_probe 1954行知)*/
 struct sensor_private_data {
 	int type;						//sensor类型,struct sensor_platform_data *pdata;合进来.
 	struct i2c_client *client;		//i2c客户端
@@ -184,6 +183,7 @@ struct sensor_private_data {
 	struct sensor_operate *ops;		//芯片驱动填充的一系列钩子、sensor相关信息.
 	struct file_operations fops;	//misc设备操作方法.
 	struct miscdevice miscdev;		//芯片驱动或者sensor_dev.c给注册的misc,一般用于给应用层提供ioctl接口.
+	char *misc_name;				//系统申请的sensor名字,以后系统统一用这个字段作为sensor misc名字,忽略具体sensor misc dev的.name字段
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	struct early_suspend early_suspend;//一级休眠
 #endif
@@ -285,6 +285,10 @@ extern int sensor_unregister_slave(int type, struct i2c_client *client,
 #define ECS_IOCTL_APP_SET_MVFLAG				_IOW(COMPASS_IOCTL_MAGIC, 0x19, short)
 #define ECS_IOCTL_APP_GET_MVFLAG				_IOR(COMPASS_IOCTL_MAGIC, 0x1A, short)
 #define ECS_IOCTL_APP_GET_DELAY				_IOR(COMPASS_IOCTL_MAGIC, 0x1B, short)
+#define ECS_IOCTL_APP_OPEN					_IOW(COMPASS_IOCTL_MAGIC, 0x1C, short)	//Replace open func
+#define ECS_IOCTL_APP_RELEASE				_IOW(COMPASS_IOCTL_MAGIC, 0x1D, short)	//Replace release func
+
+
 
 #ifdef CONFIG_COMPAT
 #define COMPAT_ECS_IOCTL_APP_SET_MODE			_IOW(COMPASS_IOCTL_MAGIC, 0x10, compat_short_t)
