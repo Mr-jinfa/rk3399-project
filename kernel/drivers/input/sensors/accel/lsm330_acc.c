@@ -240,6 +240,7 @@ struct sensor_operate gsensor_lsm330_ops = {
 	.active			= sensor_active,
 	.init				= sensor_init,
 	.report			= sensor_report_value,
+	.en_module_ko		= 1,
 };
 
 static struct sensor_operate *gsensor_get_ops(void)
@@ -268,4 +269,9 @@ static void __exit gsensor_lsm330_exit(void)
 
 module_init(gsensor_lsm330_init);
 module_exit(gsensor_lsm330_exit);
+MODULE_AUTHOR("JinFa Huang <2112201069@qq.com>");
+MODULE_DESCRIPTION("lam330_acc driver");
+MODULE_LICENSE("GPL");
+
+
 

@@ -12,6 +12,11 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
+ *log:
+ *2018.10.23 由于支持多个同类设备注册进系统,上层应用在调用[]sensor-type]_dev_loctl接口时
+ *需要做两步:
+ *1.将它调用设备的名字传进来如："compass0".以此来probe sensor 有无设备.(新增协议)
+ *2.在上一步正确probe到后,正常的读值、管理.
  */
 
 #include <linux/interrupt.h>
@@ -49,18 +54,58 @@ struct sensor_calibration_data {
 	u8 is_gyro_calibrated;
 };
 
-struct core_sensor {
-	struct sensor_private_data *g_sensor[SENSOR_NUM_TYPES];	//注册进sensor core的同种类型sensor
-	u32 map[SENSOR_NUM_TYPES];		//sensor core中所有的sensor map,布局方式是map[0] 高16位表示类型编号,低16位表示当前有多少个sensor
-	
+/*
+*管理、记录着注册进sensor core里的所有sensor.
+*sensor_no:全局的sensor number 数组
+*如当前只有一个sensor:     	sensor_no[0] 为 0
+*如当前有同类的共两个sensor:	sensor_no[0] 为 1
+*如当前有不同类的共两个sensor:	sensor_no[0] 为 0 	sensor_no[1] 为 0
+*以此类推...
+*
+*h_list:所有sensor的list head
+*/
+struct core_sensor_head {
+	atomic_t sensor_no[SENSOR_NUM_TYPES -1];	//应用层可以读取该map来获悉当下core里有多少个sensor设备.
+	struct list_head h_list; 	// 内核链表(双向循环)
 };
-static struct core_sensor rkcore_sensor;
+/*
+*记载注册进sensor core 的一个sensor
+*g_sensor:指向注册进sensor core的sensor
+*n_list:具体sensor的属性为内核链表的节点
+*/
+struct core_sensor_node {
+	struct sensor_private_data *g_sensor;
+	struct list_head n_list; // 内核链表(双向循环)
+};
+/*连接所有sensor的head是静态的.*/
+static struct core_sensor_head head_sensor;
 
 static struct sensor_operate *sensor_ops[SENSOR_NUM_ID];	//具体sensor的sops,供给sensor core用的
 static int sensor_probe_times[SENSOR_NUM_ID];
 static struct class *sensor_class;
 static struct sensor_calibration_data sensor_cali_data;
 static struct i2c_driver sensor_driver;
+
+
+/*
+*功能:根据sensor 操作符的name找到并返回具体misc dev
+*找不到返回NULL
+*/
+struct sensor_private_data *dev_name_entry(char *sensor_name, struct list_head *h_list)
+{
+	int i=0;
+	struct list_head *pos;
+	struct core_sensor_node *ptr;
+	list_for_each(pos, h_list)
+	{
+		printk("=======%d=======\n", i++);
+		ptr = list_entry(pos, struct core_sensor_node, n_list);
+		printk("[dev_name_entry] name:%s\n", ptr->g_sensor->miscdev.name);
+		if(strcmp(ptr->g_sensor->miscdev.name, sensor_name) == 0)
+			return ptr->g_sensor;
+	}
+	return NULL;
+}
 
 static int sensor_calibration_data_write(struct sensor_calibration_data *calibration_data)
 {
@@ -109,7 +154,8 @@ static ssize_t accel_calibration_show(struct class *class,
 		struct class_attribute *attr, char *buf)
 {
 	int ret;
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_ACCEL];
+	/* 找出合适的sensor */
+	struct sensor_private_data *sensor = NULL;//node_sensor.g_sensor[SENSOR_TYPE_ACCEL];
 
 	if (sensor == NULL)
 		return sprintf(buf, "no accel sensor find\n");
@@ -189,7 +235,7 @@ static int accel_do_calibration(struct sensor_private_data *sensor)
 static ssize_t accel_calibration_store(struct class *class,
 		struct class_attribute *attr, const char *buf, size_t count)
 {
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_ACCEL];
+	struct sensor_private_data *sensor = NULL; //rkcore_sensor.g_sensor[SENSOR_TYPE_ACCEL];
 	int val, ret;
 	int pre_status;
 
@@ -254,7 +300,7 @@ static ssize_t gyro_calibration_show(struct class *class,
 		struct class_attribute *attr, char *buf)
 {
 	int ret;
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_GYROSCOPE];
+	struct sensor_private_data *sensor = NULL;//rkcore_sensor.g_sensor[SENSOR_TYPE_GYROSCOPE];
 
 	if (sensor == NULL)
 		return sprintf(buf, "no gyro sensor find\n");
@@ -314,7 +360,7 @@ static int gyro_do_calibration(struct sensor_private_data *sensor)
 static ssize_t gyro_calibration_store(struct class *class,
 		struct class_attribute *attr, const char *buf, size_t count)
 {
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_GYROSCOPE];
+	struct sensor_private_data *sensor = NULL;//rkcore_sensor.g_sensor[SENSOR_TYPE_GYROSCOPE];
 	int val, ret;
 	int pre_status;
 
@@ -701,13 +747,56 @@ static int sensor_enable(struct sensor_private_data *sensor, int enable)
 static long angle_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_ANGLE];
-	struct i2c_client *client = sensor->client;
-	void __user *argp = (void __user *)arg;
+	char device_name[32] = {0};	
 	struct sensor_axis axis = {0};
 	short rate;
 	int result = 0;
+	long map_buf = 0;
+	void __user *argp = (void __user *)arg;
+	struct sensor_private_data *sensor;
+	struct i2c_client *client;
 
+	switch (cmd)
+	{
+		case SENSOR_IOCTL_GET_MAP:
+		{
+			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_ANGLE]);
+			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
+				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				result = -EFAULT;
+				goto error;
+			}
+		}
+		case SENSOR_IOCTL_PROBE:
+		{
+			if(copy_from_user(device_name, argp, 32)){
+					result = -EFAULT;
+					goto error;
+				}	
+			sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(sensor == NULL)
+			{
+				printk("do not seek suitable sensor dev by name\n");
+				return -ENODEV;
+			}
+			if(sensor->type != SENSOR_TYPE_ANGLE)
+			{
+				printk("sensor type error\n");
+				return -ENODEV;
+			}
+			printk("okay you can operate angle dev\n");
+			client = sensor->client;
+		}
+			
+		break;
+		default:
+			break;
+	}
+	if(client == NULL)
+	{
+		printk("please probe angle dev first\n");
+		return -ENODEV;
+	}
 	switch (cmd) {
 	case GSENSOR_IOCTL_APP_SET_RATE:
 		if (copy_from_user(&rate, argp, sizeof(rate))) {
@@ -793,12 +882,56 @@ static int gsensor_dev_release(struct inode *inode, struct file *file)
 static long gsensor_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_ACCEL];
-	struct i2c_client *client = sensor->client;
-	void __user *argp = (void __user *)arg;
+	char device_name[32] = {0};	
 	struct sensor_axis axis = {0};
 	short rate;
 	int result = 0;
+	long map_buf = 0;
+	void __user *argp = (void __user *)arg;
+	struct sensor_private_data *sensor;
+	struct i2c_client *client;
+
+	switch (cmd)
+	{
+		case SENSOR_IOCTL_GET_MAP:
+		{
+			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_ACCEL]);
+			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
+				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				result = -EFAULT;
+				goto error;
+			}
+		}
+		case SENSOR_IOCTL_PROBE:
+		{
+			if(copy_from_user(device_name, argp, 32)){
+					result = -EFAULT;
+					goto error;
+				}	
+			sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(sensor == NULL)
+			{
+				printk("do not seek suitable sensor dev by name\n");
+				return -ENODEV;
+			}
+			if(sensor->type != SENSOR_TYPE_ANGLE)
+			{
+				printk("sensor type error\n");
+				return -ENODEV;
+			}
+			printk("okay you can operate gsensor dev\n");
+			client = sensor->client;
+		}
+			
+		break;
+		default:
+			break;
+	}
+	if(client == NULL)
+	{
+		printk("please probe gsensor dev first\n");
+		return -ENODEV;
+	}
 
 	wait_event_interruptible(sensor->is_factory_ok, (atomic_read(&sensor->is_factory) == 0));
 
@@ -890,7 +1023,7 @@ error:
 
 static int compass_dev_open(struct inode *inode, struct file *file)
 {
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_COMPASS];
+	struct sensor_private_data *sensor = NULL;//rkcore_sensor.g_sensor[SENSOR_TYPE_COMPASS];
 	int result = 0;
 	int flag = 0;
 
@@ -905,7 +1038,7 @@ static int compass_dev_open(struct inode *inode, struct file *file)
 
 static int compass_dev_release(struct inode *inode, struct file *file)
 {
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_COMPASS];
+	struct sensor_private_data *sensor = NULL;//rkcore_sensor.g_sensor[SENSOR_TYPE_COMPASS];
 	int result = 0;
 	int flag = 0;
 
@@ -975,11 +1108,55 @@ static long compass_dev_compat_ioctl(struct file *file, unsigned int cmd, unsign
 static long compass_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_COMPASS];
-	struct i2c_client *client = sensor->client;
-	void __user *argp = (void __user *)arg;
+	char device_name[32] = {0};	
 	int result = 0;
-	short flag;
+	long flag=0;
+	long map_buf = 0;
+	void __user *argp = (void __user *)arg;
+	struct sensor_private_data *sensor;
+	struct i2c_client *client;
+
+	switch (cmd)
+	{
+		case SENSOR_IOCTL_GET_MAP:
+		{
+			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_COMPASS]);
+			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
+				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				result = -EFAULT;
+				goto error;
+			}
+		}
+		case SENSOR_IOCTL_PROBE:
+		{
+			if(copy_from_user(device_name, argp, 32)){
+					result = -EFAULT;
+					goto error;
+				}	
+			sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(sensor == NULL)
+			{
+				printk("do not seek suitable sensor dev by name\n");
+				return -ENODEV;
+			}
+			if(sensor->type != SENSOR_TYPE_COMPASS)
+			{
+				printk("sensor type error\n");
+				return -ENODEV;
+			}
+			printk("okay you can operate compass dev\n");
+			client = sensor->client;
+		}
+			
+		break;
+		default:
+			break;
+	}
+	if(client == NULL)
+	{
+		printk("please probe compass dev first\n");
+		return -ENODEV;
+	}
 
 	switch (cmd) {
 	case ECS_IOCTL_APP_SET_MFLAG:
@@ -1045,7 +1222,8 @@ static long compass_dev_ioctl(struct file *file,
 	default:
 		break;
 	}
-
+	return 0;
+error:
 	return result;
 }
 
@@ -1064,12 +1242,55 @@ static int gyro_dev_release(struct inode *inode, struct file *file)
 static long gyro_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_GYROSCOPE];
-	struct i2c_client *client = sensor->client;
-	void __user *argp = (void __user *)arg;
+	char device_name[32] = {0};	
+	short rate;
 	int result = 0;
-	int rate;
+	long map_buf = 0;
+	void __user *argp = (void __user *)arg;
+	struct sensor_private_data *sensor;
+	struct i2c_client *client;
 
+	switch (cmd)
+	{
+		case SENSOR_IOCTL_GET_MAP:
+		{
+			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_GYROSCOPE]);
+			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
+				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				result = -EFAULT;
+				goto error;
+			}
+		}
+		case SENSOR_IOCTL_PROBE:
+		{
+			if(copy_from_user(device_name, argp, 32)){
+					result = -EFAULT;
+					goto error;
+				}	
+			sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(sensor == NULL)
+			{
+				printk("do not seek suitable sensor dev by name\n");
+				return -ENODEV;
+			}
+			if(sensor->type != SENSOR_TYPE_GYROSCOPE)
+			{
+				printk("sensor type error\n");
+				return -ENODEV;
+			}
+			printk("okay you can operate gyro dev\n");
+			client = sensor->client;
+		}
+			
+		break;
+		default:
+			break;
+	}
+	if(client == NULL)
+	{
+		printk("please probe gyro dev first\n");
+		return -ENODEV;
+	}
 	wait_event_interruptible(sensor->is_factory_ok, (atomic_read(&sensor->is_factory) == 0));
 
 	switch (cmd) {
@@ -1185,12 +1406,56 @@ static long light_dev_compat_ioctl(struct file *file, unsigned int cmd, unsigned
 static long light_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_LIGHT];
-	struct i2c_client *client = sensor->client;
-	void __user *argp = (void __user *)arg;
-	int result = 0;
+	char device_name[32] = {0};	
 	short rate;
+	int result = 0;
+	long map_buf = 0;
+	void __user *argp = (void __user *)arg;
+	struct sensor_private_data *sensor;
+	struct i2c_client *client;
 
+	switch (cmd)
+	{
+		case SENSOR_IOCTL_GET_MAP:
+		{
+			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_LIGHT]);
+			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
+				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				result = -EFAULT;
+				goto error;
+			}
+		}
+		case SENSOR_IOCTL_PROBE:
+		{
+			if(copy_from_user(device_name, argp, 32)){
+					result = -EFAULT;
+					goto error;
+				}	
+			sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(sensor == NULL)
+			{
+				printk("do not seek suitable sensor dev by name\n");
+				return -ENODEV;
+			}
+			if(sensor->type != SENSOR_TYPE_LIGHT)
+			{
+				printk("sensor type error\n");
+				return -ENODEV;
+			}
+			printk("okay you can operate light dev\n");
+			client = sensor->client;
+		}
+			
+		break;
+		default:
+			break;
+	}
+	if(client == NULL)
+	{
+		printk("please probe light dev first\n");
+		return -ENODEV;
+	}
+	
 	switch (cmd) {
 	case LIGHTSENSOR_IOCTL_SET_RATE:
 		if (copy_from_user(&rate, argp, sizeof(rate))) {
@@ -1279,9 +1544,52 @@ static long proximity_dev_compat_ioctl(struct file *file, unsigned int cmd, unsi
 static long proximity_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_PROXIMITY];
-	void __user *argp = (void __user *)arg;
+	char device_name[32] = {0}; 
 	int result = 0;
+	long map_buf = 0;
+	void __user *argp = (void __user *)arg;
+	struct sensor_private_data *sensor;
+	struct i2c_client *client;
+	switch (cmd)
+	{
+		case SENSOR_IOCTL_GET_MAP:
+		{
+			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_PRESSURE]);
+			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
+				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				result = -EFAULT;
+				return result;
+			}
+		}
+		case SENSOR_IOCTL_PROBE:
+		{
+			if(copy_from_user(device_name, argp, 32)){
+					result = -EFAULT;
+					return -EFAULT;
+				}	
+			sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(sensor == NULL)
+			{
+				printk("do not seek suitable sensor dev by name\n");
+				return -ENODEV;
+			}
+			if(sensor->type != SENSOR_TYPE_PRESSURE)
+			{
+				printk("sensor type error\n");
+				return -ENODEV;
+			}
+			printk("okay you can operate proximity dev\n");
+			client = sensor->client;
+		}
+		break;
+		default:
+			break;
+	}
+	if(client == NULL)
+	{
+		printk("please probe proximity dev first\n");
+		return -ENODEV;
+	}
 
 	switch (cmd) {
 	case PSENSOR_IOCTL_GET_ENABLED:
@@ -1328,9 +1636,53 @@ static int temperature_dev_release(struct inode *inode, struct file *file)
 static long temperature_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_TEMPERATURE];
-	void __user *argp = (void __user *)arg;
+	char device_name[32] = {0}; 
 	int result = 0;
+	long map_buf = 0;
+	void __user *argp = (void __user *)arg;
+	struct sensor_private_data *sensor;
+	struct i2c_client *client;
+
+	switch (cmd)
+	{
+		case SENSOR_IOCTL_GET_MAP:
+		{
+			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_TEMPERATURE]);
+			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
+				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				return -EFAULT;
+			}
+		}
+		case SENSOR_IOCTL_PROBE:
+		{
+			if(copy_from_user(device_name, argp, 32)){
+					result = -EFAULT;
+					return result;
+				}	
+			sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(sensor == NULL)
+			{
+				printk("do not seek suitable sensor dev by name\n");
+				return -ENODEV;
+			}
+			if(sensor->type != SENSOR_TYPE_TEMPERATURE)
+			{
+				printk("sensor type error\n");
+				return -ENODEV;
+			}
+			printk("okay you can operate temperature dev\n");
+			client = sensor->client;
+		}
+			
+		break;
+		default:
+			break;
+	}
+	if(client == NULL)
+	{
+		printk("please probe temperature dev first\n");
+		return -ENODEV;
+	}
 
 	switch (cmd) {
 	case TEMPERATURE_IOCTL_GET_ENABLED:
@@ -1380,9 +1732,53 @@ static int pressure_dev_release(struct inode *inode, struct file *file)
 static long pressure_dev_ioctl(struct file *file,
 			  unsigned int cmd, unsigned long arg)
 {
-	struct sensor_private_data *sensor = rkcore_sensor.g_sensor[SENSOR_TYPE_PRESSURE];
-	void __user *argp = (void __user *)arg;
+	char device_name[32] = {0}; 
 	int result = 0;
+	long map_buf = 0;
+	void __user *argp = (void __user *)arg;
+	struct sensor_private_data *sensor;
+	struct i2c_client *client;
+
+	switch (cmd)
+	{
+		case SENSOR_IOCTL_GET_MAP:
+		{
+			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_PRESSURE]);
+			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
+				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				result = -EFAULT;
+				return result;
+			}
+		}
+		case SENSOR_IOCTL_PROBE:
+		{
+			if(copy_from_user(device_name, argp, 32)){
+					result = -EFAULT;
+					return -EFAULT;
+				}	
+			sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(sensor == NULL)
+			{
+				printk("do not seek suitable sensor dev by name\n");
+				return -ENODEV;
+			}
+			if(sensor->type != SENSOR_TYPE_PRESSURE)
+			{
+				printk("sensor type error\n");
+				return -ENODEV;
+			}
+			printk("okay you can operate pressure dev\n");
+			client = sensor->client;
+		}
+		break;
+		default:
+			break;
+	}
+	if(client == NULL)
+	{
+		printk("please probe pressure dev first\n");
+		return -ENODEV;
+	}
 
 	switch (cmd) {
 	case PRESSURE_IOCTL_GET_ENABLED:
@@ -1418,30 +1814,31 @@ static long pressure_dev_ioctl(struct file *file,
 static int sensor_misc_device_register(struct sensor_private_data *sensor, int type)
 {
 	int result = 0;
-	static atomic_t sensor_no[SENSOR_TYPE_HALL] = {ATOMIC_INIT(-1)};
 	char *misc_name = kmalloc(32, GFP_KERNEL);
-
 
 	switch (type) {
 	case SENSOR_TYPE_ANGLE:
 	
+		sprintf(misc_name, "angle_sensor%ld", (unsigned long) atomic_inc_return(&(head_sensor.sensor_no[SENSOR_TYPE_ANGLE])));
 		if (!sensor->ops->misc_dev) {
+		/*具体驱动没有指定misc dev私有字段的话,使用系统默认ops*/
 			sensor->fops.owner = THIS_MODULE;
 			sensor->fops.unlocked_ioctl = angle_dev_ioctl;
 			sensor->fops.open = angle_dev_open;
 			sensor->fops.release = angle_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			
-			sprintf(misc_name, "angle_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_ANGLE])));
 			sensor->miscdev.name = misc_name;
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
+		/*否则使用具体驱动的ops*/
+			sensor->ops->misc_dev->name = misc_name;	//更新misc name
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
 		}
 		break;
 
 	case SENSOR_TYPE_ACCEL:
+		sprintf(misc_name, "accel_sensor%ld", (unsigned long) atomic_inc_return(&(head_sensor.sensor_no[SENSOR_TYPE_ACCEL])));
 		if (!sensor->ops->misc_dev) {
 			sensor->fops.owner = THIS_MODULE;
 			sensor->fops.unlocked_ioctl = gsensor_dev_ioctl;
@@ -1452,16 +1849,17 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = gsensor_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sprintf(misc_name, "accel_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_ACCEL])));
 			sensor->miscdev.name = misc_name;
 
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
+			sensor->ops->misc_dev->name = misc_name;	//更新misc name
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
 		}
 		break;
 
 	case SENSOR_TYPE_COMPASS:
+		sprintf(misc_name, "compass_sensor%ld", (unsigned long) atomic_inc_return(&(head_sensor.sensor_no[SENSOR_TYPE_COMPASS])));
 		if (!sensor->ops->misc_dev) {
 			sensor->fops.owner = THIS_MODULE;
 			sensor->fops.unlocked_ioctl = compass_dev_ioctl;
@@ -1472,16 +1870,17 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = compass_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sprintf(misc_name, "compass_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_COMPASS])));
 			sensor->miscdev.name = misc_name;
 
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
+			sensor->ops->misc_dev->name = misc_name;	//更新misc name
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
 		}
 		break;
 
 	case SENSOR_TYPE_GYROSCOPE:
+		sprintf(misc_name, "gyro_sensor%ld", (unsigned long) atomic_inc_return(&(head_sensor.sensor_no[SENSOR_TYPE_GYROSCOPE])));
 		if (!sensor->ops->misc_dev) {
 			sensor->fops.owner = THIS_MODULE;
 			sensor->fops.unlocked_ioctl = gyro_dev_ioctl;
@@ -1489,16 +1888,17 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = gyro_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sprintf(misc_name, "gyro_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_GYROSCOPE])));
 			sensor->miscdev.name = misc_name;
 
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
+			sensor->ops->misc_dev->name = misc_name;	//更新misc name
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
 		}
 		break;
 
 	case SENSOR_TYPE_LIGHT:
+		sprintf(misc_name, "l_sensor%ld", (unsigned long) atomic_inc_return(&(head_sensor.sensor_no[SENSOR_TYPE_LIGHT])));
 		if (!sensor->ops->misc_dev) {
 			sensor->fops.owner = THIS_MODULE;
 			sensor->fops.unlocked_ioctl = light_dev_ioctl;
@@ -1509,16 +1909,17 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = light_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sprintf(misc_name, "l_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_LIGHT])));
 			sensor->miscdev.name = misc_name;
 
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
+			sensor->ops->misc_dev->name = misc_name;	//更新misc name
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
 		}
 		break;
 
 	case SENSOR_TYPE_PROXIMITY:
+		sprintf(misc_name, "p_sensor%ld", (unsigned long) atomic_inc_return(&(head_sensor.sensor_no[SENSOR_TYPE_PROXIMITY])));
 		if (!sensor->ops->misc_dev) {
 			sensor->fops.owner = THIS_MODULE;
 			sensor->fops.unlocked_ioctl = proximity_dev_ioctl;
@@ -1529,16 +1930,17 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = proximity_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sprintf(misc_name, "p_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_PROXIMITY])));
 			sensor->miscdev.name = misc_name;
 
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
+			sensor->ops->misc_dev->name = misc_name;	//更新misc name
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
 		}
 		break;
 
 	case SENSOR_TYPE_TEMPERATURE:
+		sprintf(misc_name, "temper_sensor%ld", (unsigned long) atomic_inc_return(&(head_sensor.sensor_no[SENSOR_TYPE_TEMPERATURE])));
 		if (!sensor->ops->misc_dev) {
 			sensor->fops.owner = THIS_MODULE;
 			sensor->fops.unlocked_ioctl = temperature_dev_ioctl;
@@ -1546,16 +1948,17 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = temperature_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sprintf(misc_name, "temper_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_TEMPERATURE])));
 			sensor->miscdev.name = misc_name;
 
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
+			sensor->ops->misc_dev->name = misc_name;	//更新misc name
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
 		}
 		break;
 
 	case SENSOR_TYPE_PRESSURE:
+		sprintf(misc_name, "presuer_sensor%ld", (unsigned long) atomic_inc_return(&(head_sensor.sensor_no[SENSOR_TYPE_PRESSURE])));
 		if (!sensor->ops->misc_dev) {
 			sensor->fops.owner = THIS_MODULE;
 			sensor->fops.unlocked_ioctl = pressure_dev_ioctl;
@@ -1563,11 +1966,11 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			sensor->fops.release = pressure_dev_release;
 
 			sensor->miscdev.minor = MISC_DYNAMIC_MINOR;
-			sprintf(misc_name, "presuer_sensor%ld", (unsigned long) atomic_inc_return(&(sensor_no[SENSOR_TYPE_PRESSURE])));
 			sensor->miscdev.name = misc_name;
 
 			sensor->miscdev.fops = &sensor->fops;
 		} else {
+			sensor->ops->misc_dev->name = misc_name;	//更新misc name
 			memcpy(&sensor->miscdev, sensor->ops->misc_dev, sizeof(*sensor->ops->misc_dev));
 		}
 		break;
@@ -1585,9 +1988,9 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 			"fail to register misc device %s\n", sensor->miscdev.name);
 		goto error;
 	}
-/* 注册misc成功证明该sensor有效,具体sensor没有填充miscdec字段并且当前编入内核(因为编入内核不需要卸载),
+/* 注册misc成功证明该sensor有效,具体sensor没有填充miscdev,
 *那么该sensor->miscdev用来反向填充"具体sensor的私有字段 misc_dev"*/
-if((sensor->ops->misc_dev==NULL) && (sensor->ops->en_module_ko == 0))
+if(sensor->ops->misc_dev==NULL)
 	sensor->ops->misc_dev = &sensor->miscdev;
 
 	dev_info(&sensor->client->dev, "%s:miscdevice: %s\n", __func__, sensor->miscdev.name);
@@ -1642,9 +2045,6 @@ int sensor_unregister_slave(int type, struct i2c_client *client,
 		printk(KERN_ERR "%s:%s id is error %d\n", __func__, ops->name, ops->id_i2c);
 		return -1;
 	}
-/*如果具体sensor没有填充misc dev私有字段的话*/
-	if(ops->misc_dev == NULL)
-		ops->misc_dev = &rkcore_sensor.g_sensor[type]->miscdev;
 
 /*如果是module_ko的话还需要卸载对应的杂项设备*/
 	if(ops->en_module_ko)
@@ -1664,6 +2064,7 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 	struct sensor_platform_data *pdata;
 	struct device_node *np = client->dev.of_node;
 	enum of_gpio_flags rst_flags, pwr_flags;
+	struct core_sensor_node *node_sensor;
 	unsigned long irq_flags;
 	int result = 0;
 	int type = 0;
@@ -2016,8 +2417,15 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 			"fail to register misc device %s\n", sensor->miscdev.name);
 		goto out_misc_device_register_device_failed;
 	}
+	node_sensor	 = kzalloc(sizeof(*node_sensor), GFP_KERNEL);
+	if (!node_sensor) {
+		result = -ENOMEM;
+		goto out_no_free;
+	}
 
-	rkcore_sensor.g_sensor[type] = sensor;	//注册成功后填入静态的sensor core数组,供ioctl等函数使用.
+/*注册成功后填入静态的sensor core head处,供ioctl等函数使用.*/
+	node_sensor->g_sensor = sensor;
+	list_add_tail(&node_sensor->n_list, &head_sensor.h_list);
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	if ((sensor->ops->suspend) && (sensor->ops->resume)) {
@@ -2192,6 +2600,12 @@ static struct i2c_driver sensor_driver = {
 
 static int __init sensor_init(void)
 {
+	int cnt=0;
+	/* 申请一个内核链表 */
+	INIT_LIST_HEAD(&head_sensor.h_list);
+	for(cnt=1; cnt< SENSOR_NUM_TYPES; cnt++)
+		atomic_set(&head_sensor.sensor_no[cnt], -1);
+
 	sensor_class_init();
 	return i2c_add_driver(&sensor_driver);
 }

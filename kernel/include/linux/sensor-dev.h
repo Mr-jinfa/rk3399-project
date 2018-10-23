@@ -157,7 +157,7 @@ struct sensor_operate {
 	int (*suspend)(struct i2c_client *client);	//休眠操作接口
 	int (*resume)(struct i2c_client *client);	//唤醒操作接口
 	struct miscdevice *misc_dev;				//私用misc设备,sensor-dev.c驱动会检查该字段,如填写就不会替那个sensor注册misc dev
-	int en_module_ko;				//模块是否以ko形式装入.
+	int en_module_ko;				//模块是否以ko形式装入,1以模块装入.
 };
 
 /* Platform data for the sensor  同种类型sensor private data (由sensor_probe 1954行知)*/
@@ -252,15 +252,21 @@ extern int sensor_unregister_slave(int type, struct i2c_client *client,
 
 #define DBG(x...)
 
-#define GSENSOR_IOCTL_MAGIC			'a'
+#define SENSOR_IOCTL_MAGIC			'a'
+#define GSENSOR_IOCTL_MAGIC			SENSOR_IOCTL_MAGIC
 #define GBUFF_SIZE				12	/* Rx buffer size */
 
+//get & probe sensors
+#define SENSOR_IOCTL_GET_MAP				_IOR(SENSOR_IOCTL_MAGIC, 0xff, int)
+#define SENSOR_IOCTL_PROBE				_IOR(SENSOR_IOCTL_MAGIC, 0xfe, char[32])
+
+
 /* IOCTLs for MMA8452 library */
-#define GSENSOR_IOCTL_INIT						_IO(GSENSOR_IOCTL_MAGIC, 0x01)
+#define GSENSOR_IOCTL_INIT					_IO(GSENSOR_IOCTL_MAGIC, 0x01)
 #define GSENSOR_IOCTL_RESET					_IO(GSENSOR_IOCTL_MAGIC, 0x04)
 #define GSENSOR_IOCTL_CLOSE					_IO(GSENSOR_IOCTL_MAGIC, 0x02)
 #define GSENSOR_IOCTL_START					_IO(GSENSOR_IOCTL_MAGIC, 0x03)
-#define GSENSOR_IOCTL_GETDATA					_IOR(GSENSOR_IOCTL_MAGIC, 0x08, char[GBUFF_SIZE+1])
+#define GSENSOR_IOCTL_GETDATA				_IOR(GSENSOR_IOCTL_MAGIC, 0x08, char[GBUFF_SIZE+1])
 #define GSENSOR_IOCTL_APP_SET_RATE			_IOW(GSENSOR_IOCTL_MAGIC, 0x10, short)
 #define GSENSOR_IOCTL_GET_CALIBRATION		_IOR(GSENSOR_IOCTL_MAGIC, 0x11, int[3])
 
