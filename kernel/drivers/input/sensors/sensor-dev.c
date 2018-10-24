@@ -19,6 +19,7 @@
  *2.在上一步正确probe到后,正常的读值、管理.
  -------------------------------------------------------------------------------------------
  *2018.10.23light 将compass open、release函数实现的功能放到其ioctl做.
+ *2018.10.24pm ioctl自身应该维护一份链表,这样公链和ioctl私链结合用来支持上层并发访问。
  */
 
 #include <linux/interrupt.h>
@@ -680,6 +681,10 @@ static int sensor_reset_rate(struct i2c_client *client, int rate)
 	return result;
 }
 
+/*
+*如果具体sensor没开pin脚中断的话,
+*每个sensor都挂一个delay work func.
+*/
 static void  sensor_delaywork_func(struct work_struct *work)
 {
 	struct delayed_work *delaywork = container_of(work, struct delayed_work, work);
@@ -865,8 +870,16 @@ static long angle_dev_ioctl(struct file *file,
 	int result = 0;
 	long map_buf = 0;
 	void __user *argp = (void __user *)arg;
-	struct sensor_private_data *sensor;	//ioctl自身应该维护一份链表,用来支持上层并发访问。
-	struct i2c_client *client;
+
+	static int inside_ioctl =0;
+	static struct core_sensor_node h_node4ioctl;
+	struct core_sensor_node node4ioctl;
+	if(inside_ioctl == 0)
+	{
+		inside_ioctl = 1;
+		/*本ioctl全局链表*/
+		INIT_LIST_HEAD(&h_node4ioctl.n_list);
+	}
 
 	switch (cmd)
 	{
@@ -884,26 +897,26 @@ static long angle_dev_ioctl(struct file *file,
 					result = -EFAULT;
 					goto error;
 				}	
-			sensor = dev_name_entry(device_name, &head_sensor.h_list);
-			if(sensor == NULL)
+			node4ioctl.g_sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(node4ioctl.g_sensor == NULL)
 			{
 				printk("do not seek suitable sensor dev by name\n");
 				return -ENODEV;
 			}
-			if(sensor->type != SENSOR_TYPE_ANGLE)
+			if(node4ioctl.g_sensor->type != SENSOR_TYPE_ANGLE)
 			{
 				printk("sensor type error\n");
 				return -ENODEV;
 			}
 			printk("okay you can operate angle dev\n");
-			client = sensor->client;
+			list_add_tail(&node4ioctl.n_list, &h_node4ioctl.n_list);
 		}
 			
 		break;
 		default:
 			break;
 	}
-	if(client == NULL)
+	if(node4ioctl.g_sensor->client == NULL)
 	{
 		printk("please probe angle dev first\n");
 		return -ENODEV;
@@ -921,39 +934,39 @@ static long angle_dev_ioctl(struct file *file,
 
 	switch (cmd) {
 	case GSENSOR_IOCTL_START:
-		mutex_lock(&sensor->operation_mutex);
-		if (++sensor->start_count == 1)	{
-			if (sensor->status_cur == SENSOR_OFF) {
-				sensor_enable(sensor, SENSOR_ON);
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
+		if (++node4ioctl.g_sensor->start_count == 1)	{
+			if (node4ioctl.g_sensor->status_cur == SENSOR_OFF) {
+				sensor_enable(node4ioctl.g_sensor, SENSOR_ON);
 			}
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 
 	case GSENSOR_IOCTL_CLOSE:
-		mutex_lock(&sensor->operation_mutex);
-		if (--sensor->start_count == 0) {
-			if (sensor->status_cur == SENSOR_ON) {
-				sensor_enable(sensor, SENSOR_OFF);
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
+		if (--node4ioctl.g_sensor->start_count == 0) {
+			if (node4ioctl.g_sensor->status_cur == SENSOR_ON) {
+				sensor_enable(node4ioctl.g_sensor, SENSOR_OFF);
 			}
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 
 	case GSENSOR_IOCTL_APP_SET_RATE:
-		mutex_lock(&sensor->operation_mutex);
-		result = sensor_reset_rate(client, rate);
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
+		result = sensor_reset_rate(node4ioctl.g_sensor->client, rate);
 		if (result < 0) {
-			mutex_unlock(&sensor->operation_mutex);
+			mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 			goto error;
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 
 	case GSENSOR_IOCTL_GETDATA:
-		mutex_lock(&sensor->data_mutex);
-		memcpy(&axis, &sensor->axis, sizeof(sensor->axis));
-		mutex_unlock(&sensor->data_mutex);
+		mutex_lock(&node4ioctl.g_sensor->data_mutex);
+		memcpy(&axis, &node4ioctl.g_sensor->axis, sizeof(node4ioctl.g_sensor->axis));
+		mutex_unlock(&node4ioctl.g_sensor->data_mutex);
 		break;
 
 	default:
@@ -965,7 +978,7 @@ static long angle_dev_ioctl(struct file *file,
 	switch (cmd) {
 	case GSENSOR_IOCTL_GETDATA:
 		if (copy_to_user(argp, &axis, sizeof(axis))) {
-			dev_err(&client->dev, "failed to copy sense data to user space.\n");
+			dev_err(&node4ioctl.g_sensor->client->dev, "failed to copy sense data to user space.\n");
 			result = -EFAULT;
 			goto error;
 		}
@@ -999,8 +1012,15 @@ static long gsensor_dev_ioctl(struct file *file,
 	int result = 0;
 	long map_buf = 0;
 	void __user *argp = (void __user *)arg;
-	struct sensor_private_data *sensor;
-	struct i2c_client *client;
+	static int inside_ioctl =0;
+	static struct core_sensor_node h_node4ioctl;
+	struct core_sensor_node node4ioctl;
+	if(inside_ioctl == 0)
+	{
+		inside_ioctl = 1;
+		/*本ioctl全局链表*/
+		INIT_LIST_HEAD(&h_node4ioctl.n_list);
+	}
 
 	switch (cmd)
 	{
@@ -1008,7 +1028,7 @@ static long gsensor_dev_ioctl(struct file *file,
 		{
 			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_ACCEL]);
 			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
-				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				dev_err(&node4ioctl.g_sensor->client->dev, "failed to copy sensor map data to user space.\n");
 				result = -EFAULT;
 				goto error;
 			}
@@ -1019,32 +1039,32 @@ static long gsensor_dev_ioctl(struct file *file,
 					result = -EFAULT;
 					goto error;
 				}	
-			sensor = dev_name_entry(device_name, &head_sensor.h_list);
-			if(sensor == NULL)
+			node4ioctl.g_sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(node4ioctl.g_sensor == NULL)
 			{
 				printk("do not seek suitable sensor dev by name\n");
 				return -ENODEV;
 			}
-			if(sensor->type != SENSOR_TYPE_ANGLE)
+			if(node4ioctl.g_sensor->type != SENSOR_TYPE_ANGLE)
 			{
 				printk("sensor type error\n");
 				return -ENODEV;
 			}
 			printk("okay you can operate gsensor dev\n");
-			client = sensor->client;
+			list_add_tail(&node4ioctl.n_list, &h_node4ioctl.n_list);
 		}
 			
 		break;
 		default:
 			break;
 	}
-	if(client == NULL)
+	if(node4ioctl.g_sensor->client == NULL)
 	{
 		printk("please probe gsensor dev first\n");
 		return -ENODEV;
 	}
 
-	wait_event_interruptible(sensor->is_factory_ok, (atomic_read(&sensor->is_factory) == 0));
+	wait_event_interruptible(node4ioctl.g_sensor->is_factory_ok, (atomic_read(&node4ioctl.g_sensor->is_factory) == 0));
 
 	switch (cmd) {
 	case GSENSOR_IOCTL_APP_SET_RATE:
@@ -1059,52 +1079,52 @@ static long gsensor_dev_ioctl(struct file *file,
 
 	switch (cmd) {
 	case GSENSOR_IOCTL_START:
-		mutex_lock(&sensor->operation_mutex);
-		if (++sensor->start_count == 1) {
-			if (sensor->status_cur == SENSOR_OFF) {
-				sensor_enable(sensor, SENSOR_ON);
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
+		if (++node4ioctl.g_sensor->start_count == 1) {
+			if (node4ioctl.g_sensor->status_cur == SENSOR_OFF) {
+				sensor_enable(node4ioctl.g_sensor, SENSOR_ON);
 			}
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 
 	case GSENSOR_IOCTL_CLOSE:
-		mutex_lock(&sensor->operation_mutex);
-		if (--sensor->start_count == 0) {
-			if (sensor->status_cur == SENSOR_ON) {
-				sensor_enable(sensor, SENSOR_OFF);
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
+		if (--node4ioctl.g_sensor->start_count == 0) {
+			if (node4ioctl.g_sensor->status_cur == SENSOR_ON) {
+				sensor_enable(node4ioctl.g_sensor, SENSOR_OFF);
 			}
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 
 	case GSENSOR_IOCTL_APP_SET_RATE:
-		mutex_lock(&sensor->operation_mutex);
-		result = sensor_reset_rate(client, rate);
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
+		result = sensor_reset_rate(node4ioctl.g_sensor->client, rate);
 		if (result < 0) {
-			mutex_unlock(&sensor->operation_mutex);
+			mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 			goto error;
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 
 	case GSENSOR_IOCTL_GETDATA:
-		mutex_lock(&sensor->data_mutex);
-		memcpy(&axis, &sensor->axis, sizeof(sensor->axis));
-		mutex_unlock(&sensor->data_mutex);
+		mutex_lock(&node4ioctl.g_sensor->data_mutex);
+		memcpy(&axis, &node4ioctl.g_sensor->axis, sizeof(node4ioctl.g_sensor->axis));
+		mutex_unlock(&node4ioctl.g_sensor->data_mutex);
 		break;
 
 	case GSENSOR_IOCTL_GET_CALIBRATION:
 		if (sensor_cali_data.is_accel_calibrated != 1) {
 			if (sensor_calibration_data_read(&sensor_cali_data)) {
-				dev_err(&client->dev, "failed to read accel offset data from storage\n");
+				dev_err(&node4ioctl.g_sensor->client->dev, "failed to read accel offset data from storage\n");
 				result = -EFAULT;
 				goto error;
 			}
 		}
 		if (sensor_cali_data.is_accel_calibrated == 1) {
 			if (copy_to_user(argp, sensor_cali_data.accel_offset, sizeof(sensor_cali_data.accel_offset))) {
-				dev_err(&client->dev, "failed to copy accel offset data to user\n");
+				dev_err(&node4ioctl.g_sensor->client->dev, "failed to copy accel offset data to user\n");
 				result = -EFAULT;
 				goto error;
 			}
@@ -1119,7 +1139,7 @@ static long gsensor_dev_ioctl(struct file *file,
 	switch (cmd) {
 	case GSENSOR_IOCTL_GETDATA:
 		if (copy_to_user(argp, &axis, sizeof(axis))) {
-			dev_err(&client->dev, "failed to copy sense data to user space.\n");
+			dev_err(&node4ioctl.g_sensor->client->dev, "failed to copy sense data to user space.\n");
 			result = -EFAULT;
 			goto error;
 		}
@@ -1203,66 +1223,95 @@ static long compass_dev_ioctl(struct file *file,
 {
 	char device_name[32] = {0};	
 	int result = 0;
-	long flag=0;
+	short rate=0, flag=0;
 	long map_buf = 0;
 	void __user *argp = (void __user *)arg;
-	struct sensor_private_data *sensor;
-	struct i2c_client *client;
+	static int inside_ioctl =0;
+	static struct core_sensor_node h_node4ioctl;
+	struct core_sensor_node node4ioctl;
+	if(inside_ioctl == 0)
+	{
+		inside_ioctl = 1;
+		/*本ioctl全局链表*/
+		INIT_LIST_HEAD(&h_node4ioctl.n_list);
+	}
 
 	switch (cmd)
 	{
-		case SENSOR_IOCTL_GET_MAP:
-		{
-			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_COMPASS]);
-			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
-				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
-				result = -EFAULT;
-				goto error;
-			}
-		}
+		
 		case SENSOR_IOCTL_PROBE:
 		{
 			if(copy_from_user(device_name, argp, 32)){
 					result = -EFAULT;
 					goto error;
 			}
-			sensor = dev_name_entry(device_name, &head_sensor.h_list);
-			if(sensor == NULL)
+			node4ioctl.g_sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(node4ioctl.g_sensor == NULL)
 			{
 				printk("[k]:do not seek suitable sensor dev by name:%s\n", device_name);
 				return -ENODEV;
 			}
-			if(sensor->type != SENSOR_TYPE_COMPASS)
+			if(node4ioctl.g_sensor->type != SENSOR_TYPE_COMPASS)
 			{
 				printk("sensor type error\n");
 				return -ENODEV;
 			}
-			client = sensor->client;
+			list_add_tail(&node4ioctl.n_list, &h_node4ioctl.n_list);
 		}
-
 		break;
 		default:
 			break;
 	}
-	if(client == NULL)
+	if(node4ioctl.g_sensor->client == NULL)
 	{
 		printk("please probe compass dev first\n");
 		return -ENODEV;
 	}
 
 	switch (cmd) {
-
+	case ECS_IOCTL_APP_ENABLE:
+	{
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
+		if (node4ioctl.g_sensor->status_cur == SENSOR_OFF)
+			sensor_enable(node4ioctl.g_sensor, SENSOR_ON);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
+	}
+	break;
+	case ECS_IOCTL_APP_DISABLE:
+	{
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
+		if (node4ioctl.g_sensor->status_cur == SENSOR_ON)
+			sensor_enable(node4ioctl.g_sensor, SENSOR_OFF);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
+	}
+	break;
+	case SENSOR_IOCTL_GET_MAP:
+	{
+		map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_COMPASS]);
+		if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
+			dev_err(&node4ioctl.g_sensor->client->dev, "failed to copy sensor map data to user space.\n");
+			result = -EFAULT;
+			goto error;
+		}
+	}
+	break;
 	case ECS_IOCTL_APP_SET_MFLAG:
 	case ECS_IOCTL_APP_SET_AFLAG:
 	case ECS_IOCTL_APP_SET_MVFLAG:
-		if (copy_from_user(&flag, argp, sizeof(flag)))
+		if (copy_from_user(&flag, argp, sizeof(flag))){
+			printk("=============SET_MVFLAG==============\n");
 			return -EFAULT;
+		}
+		printk("=============SET_MVFLAG %d==============\n", flag);
 		if (flag < 0 || flag > 1)
 			return -EINVAL;
 		break;
 	case ECS_IOCTL_APP_SET_DELAY:
-		if (copy_from_user(&flag, argp, sizeof(flag)))
+		if (copy_from_user(&rate, argp, sizeof(rate))){
+			printk("=============SET_DELAY==============\n");
 			return -EFAULT;
+		}
+		printk("=============SET_DELAY %d==============\n", rate);
 		break;
 	default:
 		break;
@@ -1270,35 +1319,35 @@ static long compass_dev_ioctl(struct file *file,
 
 	switch (cmd) {
 	case ECS_IOCTL_APP_SET_MFLAG:
-		atomic_set(&sensor->flags.m_flag, flag);
+		atomic_set(&node4ioctl.g_sensor->flags.m_flag, flag);
 		break;
 	case ECS_IOCTL_APP_GET_MFLAG:
-		flag = atomic_read(&sensor->flags.m_flag);
+		flag = atomic_read(&node4ioctl.g_sensor->flags.m_flag);
 		break;
 	case ECS_IOCTL_APP_SET_AFLAG:
-		atomic_set(&sensor->flags.a_flag, flag);
+		atomic_set(&node4ioctl.g_sensor->flags.a_flag, flag);
 		break;
 	case ECS_IOCTL_APP_GET_AFLAG:
-		flag = atomic_read(&sensor->flags.a_flag);
+		flag = atomic_read(&node4ioctl.g_sensor->flags.a_flag);
 		break;
 	case ECS_IOCTL_APP_SET_MVFLAG:
-		atomic_set(&sensor->flags.mv_flag, flag);
+		atomic_set(&node4ioctl.g_sensor->flags.mv_flag, flag);
 		break;
 	case ECS_IOCTL_APP_GET_MVFLAG:
-		flag = atomic_read(&sensor->flags.mv_flag);
+		flag = atomic_read(&node4ioctl.g_sensor->flags.mv_flag);
 		break;
 	case ECS_IOCTL_APP_SET_DELAY:
-		sensor->flags.delay = flag;
-		mutex_lock(&sensor->operation_mutex);
-		result = sensor_reset_rate(client, flag);
+		node4ioctl.g_sensor->flags.delay = rate;
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
+		result = sensor_reset_rate(node4ioctl.g_sensor->client, rate);
 		if (result < 0) {
-			mutex_unlock(&sensor->operation_mutex);
+			mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 			return result;
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 	case ECS_IOCTL_APP_GET_DELAY:
-		flag = sensor->flags.delay;
+		rate = node4ioctl.g_sensor->flags.delay;
 		break;
 	default:
 		break;
@@ -1340,8 +1389,15 @@ static long gyro_dev_ioctl(struct file *file,
 	int result = 0;
 	long map_buf = 0;
 	void __user *argp = (void __user *)arg;
-	struct sensor_private_data *sensor;
-	struct i2c_client *client;
+	static int inside_ioctl =0;
+	static struct core_sensor_node h_node4ioctl;
+	struct core_sensor_node node4ioctl;
+	if(inside_ioctl == 0)
+	{
+		inside_ioctl = 1;
+		/*本ioctl全局链表*/
+		INIT_LIST_HEAD(&h_node4ioctl.n_list);
+	}
 
 	switch (cmd)
 	{
@@ -1349,7 +1405,7 @@ static long gyro_dev_ioctl(struct file *file,
 		{
 			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_GYROSCOPE]);
 			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
-				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				dev_err(&node4ioctl.g_sensor->client->dev, "failed to copy sensor map data to user space.\n");
 				result = -EFAULT;
 				goto error;
 			}
@@ -1360,86 +1416,86 @@ static long gyro_dev_ioctl(struct file *file,
 					result = -EFAULT;
 					goto error;
 				}	
-			sensor = dev_name_entry(device_name, &head_sensor.h_list);
-			if(sensor == NULL)
+			node4ioctl.g_sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(node4ioctl.g_sensor == NULL)
 			{
 				printk("do not seek suitable sensor dev by name\n");
 				return -ENODEV;
 			}
-			if(sensor->type != SENSOR_TYPE_GYROSCOPE)
+			if(node4ioctl.g_sensor->type != SENSOR_TYPE_GYROSCOPE)
 			{
 				printk("sensor type error\n");
 				return -ENODEV;
 			}
 			printk("okay you can operate gyro dev\n");
-			client = sensor->client;
+			list_add_tail(&node4ioctl.n_list, &h_node4ioctl.n_list);
 		}
 			
 		break;
 		default:
 			break;
 	}
-	if(client == NULL)
+	if(node4ioctl.g_sensor->client == NULL)
 	{
 		printk("please probe gyro dev first\n");
 		return -ENODEV;
 	}
-	wait_event_interruptible(sensor->is_factory_ok, (atomic_read(&sensor->is_factory) == 0));
+	wait_event_interruptible(node4ioctl.g_sensor->is_factory_ok, (atomic_read(&node4ioctl.g_sensor->is_factory) == 0));
 
 	switch (cmd) {
 	case L3G4200D_IOCTL_GET_ENABLE:
-		result = !sensor->status_cur;
+		result = !node4ioctl.g_sensor->status_cur;
 		if (copy_to_user(argp, &result, sizeof(result))) {
-			dev_err(&client->dev, "%s:failed to copy status to user space.\n", __func__);
+			dev_err(&node4ioctl.g_sensor->client->dev, "%s:failed to copy status to user space.\n", __func__);
 			return -EFAULT;
 		}
 		break;
 	case L3G4200D_IOCTL_SET_ENABLE:
 		if (copy_from_user(&result, argp, sizeof(result))) {
-			dev_err(&client->dev, "%s:failed to copy gyro sensor status from user space.\n", __func__);
+			dev_err(&node4ioctl.g_sensor->client->dev, "%s:failed to copy gyro sensor status from user space.\n", __func__);
 			return -EFAULT;
 		}
-		mutex_lock(&sensor->operation_mutex);
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
 		if (result) {
-			if (sensor->status_cur == SENSOR_OFF)
-				sensor_enable(sensor, SENSOR_ON);
+			if (node4ioctl.g_sensor->status_cur == SENSOR_OFF)
+				sensor_enable(node4ioctl.g_sensor, SENSOR_ON);
 		} else {
-			if (sensor->status_cur == SENSOR_ON)
-				sensor_enable(sensor, SENSOR_OFF);
+			if (node4ioctl.g_sensor->status_cur == SENSOR_ON)
+				sensor_enable(node4ioctl.g_sensor, SENSOR_OFF);
 		}
-		result = sensor->status_cur;
+		result = node4ioctl.g_sensor->status_cur;
 		if (copy_to_user(argp, &result, sizeof(result))) {
-			mutex_unlock(&sensor->operation_mutex);
-			dev_err(&client->dev, "%s:failed to copy sense data to user space.\n", __func__);
+			mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
+			dev_err(&node4ioctl.g_sensor->client->dev, "%s:failed to copy sense data to user space.\n", __func__);
 			return -EFAULT;
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 	case L3G4200D_IOCTL_SET_DELAY:
 		if (copy_from_user(&rate, argp, sizeof(rate))) {
-			dev_err(&client->dev, "L3G4200D_IOCTL_SET_DELAY: copy form user failed\n");
+			dev_err(&node4ioctl.g_sensor->client->dev, "L3G4200D_IOCTL_SET_DELAY: copy form user failed\n");
 			return -EFAULT;
 		}
-		mutex_lock(&sensor->operation_mutex);
-		result = sensor_reset_rate(client, rate);
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
+		result = sensor_reset_rate(node4ioctl.g_sensor->client, rate);
 		if (result < 0) {
-			dev_err(&client->dev, "gyro reset rate failed\n");
-			mutex_unlock(&sensor->operation_mutex);
+			dev_err(&node4ioctl.g_sensor->client->dev, "gyro reset rate failed\n");
+			mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 			goto error;
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 	case L3G4200D_IOCTL_GET_CALIBRATION:
 		if (sensor_cali_data.is_gyro_calibrated != 1) {
 			if (sensor_calibration_data_read(&sensor_cali_data)) {
-				dev_err(&client->dev, "failed to read gyro offset data from storage\n");
+				dev_err(&node4ioctl.g_sensor->client->dev, "failed to read gyro offset data from storage\n");
 				result = -EFAULT;
 				goto error;
 			}
 		}
 		if (sensor_cali_data.is_gyro_calibrated == 1) {
 			if (copy_to_user(argp, sensor_cali_data.gyro_offset, sizeof(sensor_cali_data.gyro_offset))) {
-				dev_err(&client->dev, "failed to copy gyro offset data to user\n");
+				dev_err(&node4ioctl.g_sensor->client->dev, "failed to copy gyro offset data to user\n");
 				result = -EFAULT;
 				goto error;
 			}
@@ -1504,8 +1560,15 @@ static long light_dev_ioctl(struct file *file,
 	int result = 0;
 	long map_buf = 0;
 	void __user *argp = (void __user *)arg;
-	struct sensor_private_data *sensor;
-	struct i2c_client *client;
+	static int inside_ioctl =0;
+	static struct core_sensor_node h_node4ioctl;
+	struct core_sensor_node node4ioctl;
+	if(inside_ioctl == 0)
+	{
+		inside_ioctl = 1;
+		/*本ioctl全局链表*/
+		INIT_LIST_HEAD(&h_node4ioctl.n_list);
+	}
 
 	switch (cmd)
 	{
@@ -1513,7 +1576,7 @@ static long light_dev_ioctl(struct file *file,
 		{
 			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_LIGHT]);
 			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
-				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				dev_err(&node4ioctl.g_sensor->client->dev, "failed to copy sensor map data to user space.\n");
 				result = -EFAULT;
 				goto error;
 			}
@@ -1524,26 +1587,26 @@ static long light_dev_ioctl(struct file *file,
 					result = -EFAULT;
 					goto error;
 				}	
-			sensor = dev_name_entry(device_name, &head_sensor.h_list);
-			if(sensor == NULL)
+			node4ioctl.g_sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(node4ioctl.g_sensor == NULL)
 			{
 				printk("do not seek suitable sensor dev by name\n");
 				return -ENODEV;
 			}
-			if(sensor->type != SENSOR_TYPE_LIGHT)
+			if(node4ioctl.g_sensor->type != SENSOR_TYPE_LIGHT)
 			{
 				printk("sensor type error\n");
 				return -ENODEV;
 			}
 			printk("okay you can operate light dev\n");
-			client = sensor->client;
+			list_add_tail(&node4ioctl.n_list, &h_node4ioctl.n_list);
 		}
 			
 		break;
 		default:
 			break;
 	}
-	if(client == NULL)
+	if(node4ioctl.g_sensor->client == NULL)
 	{
 		printk("please probe light dev first\n");
 		return -ENODEV;
@@ -1552,39 +1615,39 @@ static long light_dev_ioctl(struct file *file,
 	switch (cmd) {
 	case LIGHTSENSOR_IOCTL_SET_RATE:
 		if (copy_from_user(&rate, argp, sizeof(rate))) {
-			dev_err(&client->dev, "%s:failed to copy light sensor rate from user space.\n", __func__);
+			dev_err(&node4ioctl.g_sensor->client->dev, "%s:failed to copy light sensor rate from user space.\n", __func__);
 			return -EFAULT;
 		}
-		mutex_lock(&sensor->operation_mutex);
-		result = sensor_reset_rate(client, rate);
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
+		result = sensor_reset_rate(node4ioctl.g_sensor->client, rate);
 		if (result < 0) {
-			mutex_unlock(&sensor->operation_mutex);
+			mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 			goto error;
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 	case LIGHTSENSOR_IOCTL_GET_ENABLED:
-		result = sensor->status_cur;
+		result = node4ioctl.g_sensor->status_cur;
 		if (copy_to_user(argp, &result, sizeof(result))) {
-			dev_err(&client->dev, "%s:failed to copy light sensor status to user space.\n", __func__);
+			dev_err(&node4ioctl.g_sensor->client->dev, "%s:failed to copy light sensor status to user space.\n", __func__);
 			return -EFAULT;
 		}
 		break;
 	case LIGHTSENSOR_IOCTL_ENABLE:
 		if (copy_from_user(&result, argp, sizeof(result))) {
-			dev_err(&client->dev, "%s:failed to copy light sensor status from user space.\n", __func__);
+			dev_err(&node4ioctl.g_sensor->client->dev, "%s:failed to copy light sensor status from user space.\n", __func__);
 			return -EFAULT;
 		}
 
-		mutex_lock(&sensor->operation_mutex);
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
 		if (result) {
-			if (sensor->status_cur == SENSOR_OFF)
-				sensor_enable(sensor, SENSOR_ON);
+			if (node4ioctl.g_sensor->status_cur == SENSOR_OFF)
+				sensor_enable(node4ioctl.g_sensor, SENSOR_ON);
 		} else {
-			if (sensor->status_cur == SENSOR_ON)
-				sensor_enable(sensor, SENSOR_OFF);
+			if (node4ioctl.g_sensor->status_cur == SENSOR_ON)
+				sensor_enable(node4ioctl.g_sensor, SENSOR_OFF);
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 
 	default:
@@ -1641,15 +1704,23 @@ static long proximity_dev_ioctl(struct file *file,
 	int result = 0;
 	long map_buf = 0;
 	void __user *argp = (void __user *)arg;
-	struct sensor_private_data *sensor;
-	struct i2c_client *client;
+	static int inside_ioctl =0;
+	static struct core_sensor_node h_node4ioctl;
+	struct core_sensor_node node4ioctl;
+	if(inside_ioctl == 0)
+	{
+		inside_ioctl = 1;
+		/*本ioctl全局链表*/
+		INIT_LIST_HEAD(&h_node4ioctl.n_list);
+	}
+
 	switch (cmd)
 	{
 		case SENSOR_IOCTL_GET_MAP:
 		{
 			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_PRESSURE]);
 			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
-				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				dev_err(&node4ioctl.g_sensor->client->dev, "failed to copy sensor map data to user space.\n");
 				result = -EFAULT;
 				return result;
 			}
@@ -1660,25 +1731,25 @@ static long proximity_dev_ioctl(struct file *file,
 					result = -EFAULT;
 					return -EFAULT;
 				}	
-			sensor = dev_name_entry(device_name, &head_sensor.h_list);
-			if(sensor == NULL)
+			node4ioctl.g_sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(node4ioctl.g_sensor == NULL)
 			{
 				printk("do not seek suitable sensor dev by name\n");
 				return -ENODEV;
 			}
-			if(sensor->type != SENSOR_TYPE_PRESSURE)
+			if(node4ioctl.g_sensor->type != SENSOR_TYPE_PRESSURE)
 			{
 				printk("sensor type error\n");
 				return -ENODEV;
 			}
 			printk("okay you can operate proximity dev\n");
-			client = sensor->client;
+			list_add_tail(&node4ioctl.n_list, &h_node4ioctl.n_list);
 		}
 		break;
 		default:
 			break;
 	}
-	if(client == NULL)
+	if(node4ioctl.g_sensor->client == NULL)
 	{
 		printk("please probe proximity dev first\n");
 		return -ENODEV;
@@ -1686,26 +1757,26 @@ static long proximity_dev_ioctl(struct file *file,
 
 	switch (cmd) {
 	case PSENSOR_IOCTL_GET_ENABLED:
-		result = sensor->status_cur;
+		result = node4ioctl.g_sensor->status_cur;
 		if (copy_to_user(argp, &result, sizeof(result))) {
-			dev_err(&sensor->client->dev, "%s:failed to copy psensor status to user space.\n", __func__);
+			dev_err(&node4ioctl.g_sensor->client->dev, "%s:failed to copy psensor status to user space.\n", __func__);
 			return -EFAULT;
 		}
 		break;
 	case PSENSOR_IOCTL_ENABLE:
 		if (copy_from_user(&result, argp, sizeof(result))) {
-			dev_err(&sensor->client->dev, "%s:failed to copy psensor status from user space.\n", __func__);
+			dev_err(&node4ioctl.g_sensor->client->dev, "%s:failed to copy psensor status from user space.\n", __func__);
 			return -EFAULT;
 		}
-		mutex_lock(&sensor->operation_mutex);
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
 		if (result) {
-			if (sensor->status_cur == SENSOR_OFF)
-				sensor_enable(sensor, SENSOR_ON);
+			if (node4ioctl.g_sensor->status_cur == SENSOR_OFF)
+				sensor_enable(node4ioctl.g_sensor, SENSOR_ON);
 		} else {
-			if (sensor->status_cur == SENSOR_ON)
-				sensor_enable(sensor, SENSOR_OFF);
+			if (node4ioctl.g_sensor->status_cur == SENSOR_ON)
+				sensor_enable(node4ioctl.g_sensor, SENSOR_OFF);
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 
 	default:
@@ -1733,8 +1804,15 @@ static long temperature_dev_ioctl(struct file *file,
 	int result = 0;
 	long map_buf = 0;
 	void __user *argp = (void __user *)arg;
-	struct sensor_private_data *sensor;
-	struct i2c_client *client;
+	static int inside_ioctl =0;
+	static struct core_sensor_node h_node4ioctl;
+	struct core_sensor_node node4ioctl;
+	if(inside_ioctl == 0)
+	{
+		inside_ioctl = 1;
+		/*本ioctl全局链表*/
+		INIT_LIST_HEAD(&h_node4ioctl.n_list);
+	}
 
 	switch (cmd)
 	{
@@ -1742,7 +1820,7 @@ static long temperature_dev_ioctl(struct file *file,
 		{
 			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_TEMPERATURE]);
 			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
-				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				dev_err(&node4ioctl.g_sensor->client->dev, "failed to copy sensor map data to user space.\n");
 				return -EFAULT;
 			}
 		}
@@ -1752,26 +1830,26 @@ static long temperature_dev_ioctl(struct file *file,
 					result = -EFAULT;
 					return result;
 				}	
-			sensor = dev_name_entry(device_name, &head_sensor.h_list);
-			if(sensor == NULL)
+			node4ioctl.g_sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(node4ioctl.g_sensor == NULL)
 			{
 				printk("do not seek suitable sensor dev by name\n");
 				return -ENODEV;
 			}
-			if(sensor->type != SENSOR_TYPE_TEMPERATURE)
+			if(node4ioctl.g_sensor->type != SENSOR_TYPE_TEMPERATURE)
 			{
 				printk("sensor type error\n");
 				return -ENODEV;
 			}
 			printk("okay you can operate temperature dev\n");
-			client = sensor->client;
+			list_add_tail(&node4ioctl.n_list, &h_node4ioctl.n_list);
 		}
 			
 		break;
 		default:
 			break;
 	}
-	if(client == NULL)
+	if(node4ioctl.g_sensor->client == NULL)
 	{
 		printk("please probe temperature dev first\n");
 		return -ENODEV;
@@ -1779,26 +1857,26 @@ static long temperature_dev_ioctl(struct file *file,
 
 	switch (cmd) {
 	case TEMPERATURE_IOCTL_GET_ENABLED:
-		result = sensor->status_cur;
+		result = node4ioctl.g_sensor->status_cur;
 		if (copy_to_user(argp, &result, sizeof(result))) {
-			dev_err(&sensor->client->dev, "%s:failed to copy temperature sensor status to user space.\n", __func__);
+			dev_err(&node4ioctl.g_sensor->client->dev, "%s:failed to copy temperature sensor status to user space.\n", __func__);
 			return -EFAULT;
 		}
 		break;
 	case TEMPERATURE_IOCTL_ENABLE:
 		if (copy_from_user(&result, argp, sizeof(result))) {
-			dev_err(&sensor->client->dev, "%s:failed to copy temperature sensor status from user space.\n", __func__);
+			dev_err(&node4ioctl.g_sensor->client->dev, "%s:failed to copy temperature sensor status from user space.\n", __func__);
 			return -EFAULT;
 		}
-		mutex_lock(&sensor->operation_mutex);
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
 		if (result) {
-			if (sensor->status_cur == SENSOR_OFF)
-				sensor_enable(sensor, SENSOR_ON);
+			if (node4ioctl.g_sensor->status_cur == SENSOR_OFF)
+				sensor_enable(node4ioctl.g_sensor, SENSOR_ON);
 		} else {
-			if (sensor->status_cur == SENSOR_ON)
-				sensor_enable(sensor, SENSOR_OFF);
+			if (node4ioctl.g_sensor->status_cur == SENSOR_ON)
+				sensor_enable(node4ioctl.g_sensor, SENSOR_OFF);
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 
 	default:
@@ -1829,8 +1907,15 @@ static long pressure_dev_ioctl(struct file *file,
 	int result = 0;
 	long map_buf = 0;
 	void __user *argp = (void __user *)arg;
-	struct sensor_private_data *sensor;
-	struct i2c_client *client;
+	static int inside_ioctl =0;
+	static struct core_sensor_node h_node4ioctl;
+	struct core_sensor_node node4ioctl;
+	if(inside_ioctl == 0)
+	{
+		inside_ioctl = 1;
+		/*本ioctl全局链表*/
+		INIT_LIST_HEAD(&h_node4ioctl.n_list);
+	}
 
 	switch (cmd)
 	{
@@ -1838,7 +1923,7 @@ static long pressure_dev_ioctl(struct file *file,
 		{
 			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_PRESSURE]);
 			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
-				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
+				dev_err(&node4ioctl.g_sensor->client->dev, "failed to copy sensor map data to user space.\n");
 				result = -EFAULT;
 				return result;
 			}
@@ -1849,25 +1934,25 @@ static long pressure_dev_ioctl(struct file *file,
 					result = -EFAULT;
 					return -EFAULT;
 				}	
-			sensor = dev_name_entry(device_name, &head_sensor.h_list);
-			if(sensor == NULL)
+			node4ioctl.g_sensor = dev_name_entry(device_name, &head_sensor.h_list);
+			if(node4ioctl.g_sensor == NULL)
 			{
 				printk("do not seek suitable sensor dev by name\n");
 				return -ENODEV;
 			}
-			if(sensor->type != SENSOR_TYPE_PRESSURE)
+			if(node4ioctl.g_sensor->type != SENSOR_TYPE_PRESSURE)
 			{
 				printk("sensor type error\n");
 				return -ENODEV;
 			}
 			printk("okay you can operate pressure dev\n");
-			client = sensor->client;
+			list_add_tail(&node4ioctl.n_list, &node4ioctl.n_list);
 		}
 		break;
 		default:
 			break;
 	}
-	if(client == NULL)
+	if(node4ioctl.g_sensor->client == NULL)
 	{
 		printk("please probe pressure dev first\n");
 		return -ENODEV;
@@ -1875,26 +1960,26 @@ static long pressure_dev_ioctl(struct file *file,
 
 	switch (cmd) {
 	case PRESSURE_IOCTL_GET_ENABLED:
-		result = sensor->status_cur;
+		result = node4ioctl.g_sensor->status_cur;
 		if (copy_to_user(argp, &result, sizeof(result))) {
-			dev_err(&sensor->client->dev, "%s:failed to copy pressure sensor status to user space.\n", __func__);
+			dev_err(&node4ioctl.g_sensor->client->dev, "%s:failed to copy pressure sensor status to user space.\n", __func__);
 			return -EFAULT;
 		}
 		break;
 	case PRESSURE_IOCTL_ENABLE:
 		if (copy_from_user(&result, argp, sizeof(result))) {
-			dev_err(&sensor->client->dev, "%s:failed to copy pressure sensor status from user space.\n", __func__);
+			dev_err(&node4ioctl.g_sensor->client->dev, "%s:failed to copy pressure sensor status from user space.\n", __func__);
 			return -EFAULT;
 		}
-		mutex_lock(&sensor->operation_mutex);
+		mutex_lock(&node4ioctl.g_sensor->operation_mutex);
 		if (result) {
-			if (sensor->status_cur == SENSOR_OFF)
-				sensor_enable(sensor, SENSOR_ON);
+			if (node4ioctl.g_sensor->status_cur == SENSOR_OFF)
+				sensor_enable(node4ioctl.g_sensor, SENSOR_ON);
 		} else {
-			if (sensor->status_cur == SENSOR_ON)
-				sensor_enable(sensor, SENSOR_OFF);
+			if (node4ioctl.g_sensor->status_cur == SENSOR_ON)
+				sensor_enable(node4ioctl.g_sensor, SENSOR_OFF);
 		}
-		mutex_unlock(&sensor->operation_mutex);
+		mutex_unlock(&node4ioctl.g_sensor->operation_mutex);
 		break;
 
 	default:
@@ -2172,7 +2257,7 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 	struct sensor_platform_data *pdata;
 	struct device_node *np = client->dev.of_node;
 	enum of_gpio_flags rst_flags, pwr_flags;
-	struct core_sensor_node *node_sensor;
+	struct core_sensor_node *node4probe;
 	unsigned long irq_flags;
 	int result = 0;
 	int type = 0;
@@ -2523,15 +2608,15 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 			"fail to register misc device %s\n", sensor->miscdev.name);
 		goto out_misc_device_register_device_failed;
 	}
-	node_sensor	 = kzalloc(sizeof(*node_sensor), GFP_KERNEL);
-	if (!node_sensor) {
+	node4probe	 = kzalloc(sizeof(*node4probe), GFP_KERNEL);
+	if (!node4probe) {
 		result = -ENOMEM;
 		goto out_no_free;
 	}
 
 /*注册成功后填入静态的sensor core head处,供ioctl等函数使用.*/
-	node_sensor->g_sensor = sensor;
-	list_add_tail(&node_sensor->n_list, &head_sensor.h_list);
+	node4probe->g_sensor = sensor;
+	list_add_tail(&node4probe->n_list, &head_sensor.h_list);
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	if ((sensor->ops->suspend) && (sensor->ops->resume)) {
@@ -2707,7 +2792,7 @@ static struct i2c_driver sensor_driver = {
 static int __init sensor_init(void)
 {
 	int cnt=0;
-	/* 申请一个内核链表 */
+	/* 初始化一个内核链表 */
 	INIT_LIST_HEAD(&head_sensor.h_list);
 	for(cnt=1; cnt< SENSOR_NUM_TYPES; cnt++)
 		atomic_set(&head_sensor.sensor_no[cnt], -1);

@@ -125,13 +125,13 @@ struct sensor_axis {
 *sensor处在状态
 */
 struct sensor_flag {
-	atomic_t a_flag;	//加速度计
-	atomic_t m_flag;	//陀螺仪
-	atomic_t mv_flag;	//电磁传感器
-	atomic_t open_flag;	//用来标记电子罗盘(陀螺仪)是否开启,=1开启
+	atomic_t a_flag;	//加速度计 1:通过input dev上报数据
+	atomic_t m_flag;	//电磁传感器 1:通过input dev上报数据
+	atomic_t mv_flag;	//陀螺仪 1:通过input dev上报数据
+	atomic_t open_flag;	//用来标记电子罗盘(陀螺仪)是否开启,=1开启 这个字段好像没什么用.
 	atomic_t debug_flag;
 	long long delay;	//用来给应用层设置延时工作的延时ms.
-	wait_queue_head_t open_wq;	//这个目前在电子罗盘上使用,用来阻塞获取compass的 open_flag值.
+	wait_queue_head_t open_wq;	//用到work queue就用它来做等待队列头.
 };
 
 //这个operate被每个具体sensor使用..可以说这个结构体出的数据都会被struct sensor_private_data、struct sensor_platform_data使用.
@@ -183,7 +183,6 @@ struct sensor_private_data {
 	struct sensor_operate *ops;		//芯片驱动填充的一系列钩子、sensor相关信息.
 	struct file_operations fops;	//misc设备操作方法.
 	struct miscdevice miscdev;		//芯片驱动或者sensor_dev.c给注册的misc,一般用于给应用层提供ioctl接口.
-	char *misc_name;				//系统申请的sensor名字,以后系统统一用这个字段作为sensor misc名字,忽略具体sensor misc dev的.name字段
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	struct early_suspend early_suspend;//一级休眠
 #endif
@@ -274,19 +273,19 @@ extern int sensor_unregister_slave(int type, struct i2c_client *client,
 #define COMPASS_IOCTL_MAGIC					'c'
 /* IOCTLs for APPs */
 #define ECS_IOCTL_APP_SET_MODE				_IOW(COMPASS_IOCTL_MAGIC, 0x10, short)
-#define ECS_IOCTL_APP_SET_MFLAG				_IOW(COMPASS_IOCTL_MAGIC, 0x11, short)
+#define ECS_IOCTL_APP_SET_MFLAG				_IOW(COMPASS_IOCTL_MAGIC, 0x11, short)	//设置采集电磁传感器数据的延时函数的延时时间.
 #define ECS_IOCTL_APP_GET_MFLAG				_IOW(COMPASS_IOCTL_MAGIC, 0x12, short)
-#define ECS_IOCTL_APP_SET_AFLAG				_IOW(COMPASS_IOCTL_MAGIC, 0x13, short)
+#define ECS_IOCTL_APP_SET_AFLAG				_IOW(COMPASS_IOCTL_MAGIC, 0x13, short)	//设置采集加速度传感器数据的延时函数的延时时间.
 #define ECS_IOCTL_APP_GET_AFLAG				_IOR(COMPASS_IOCTL_MAGIC, 0x14, short)
 #define ECS_IOCTL_APP_SET_TFLAG				_IOR(COMPASS_IOCTL_MAGIC, 0x15, short)/* NOT use */
 #define ECS_IOCTL_APP_GET_TFLAG				_IOR(COMPASS_IOCTL_MAGIC, 0x16, short)/* NOT use */
 #define ECS_IOCTL_APP_RESET_PEDOMETER		_IOW(COMPASS_IOCTL_MAGIC, 0x17)	/* NOT use */
-#define ECS_IOCTL_APP_SET_DELAY				_IOW(COMPASS_IOCTL_MAGIC, 0x18, short)
-#define ECS_IOCTL_APP_SET_MVFLAG				_IOW(COMPASS_IOCTL_MAGIC, 0x19, short)
+#define ECS_IOCTL_APP_SET_DELAY				_IOW(COMPASS_IOCTL_MAGIC, 0x18, short)	//开启延时函数
+#define ECS_IOCTL_APP_SET_MVFLAG				_IOW(COMPASS_IOCTL_MAGIC, 0x19, short)	//设置采集陀螺仪传感器数据的延时函数的延时时间. 
 #define ECS_IOCTL_APP_GET_MVFLAG				_IOR(COMPASS_IOCTL_MAGIC, 0x1A, short)
 #define ECS_IOCTL_APP_GET_DELAY				_IOR(COMPASS_IOCTL_MAGIC, 0x1B, short)
-#define ECS_IOCTL_APP_OPEN					_IOW(COMPASS_IOCTL_MAGIC, 0x1C, short)	//Replace open func
-#define ECS_IOCTL_APP_RELEASE				_IOW(COMPASS_IOCTL_MAGIC, 0x1D, short)	//Replace release func
+#define ECS_IOCTL_APP_ENABLE				_IO(COMPASS_IOCTL_MAGIC, 0x1C)	//Replace open func
+#define ECS_IOCTL_APP_DISABLE				_IO(COMPASS_IOCTL_MAGIC, 0x1D)	//Replace release func
 
 
 

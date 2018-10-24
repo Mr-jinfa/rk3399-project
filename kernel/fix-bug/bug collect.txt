@@ -34,4 +34,7 @@ rk sensor core架构(即input/sensors目录下的文件)只能将各个sensor驱动编译入内核(.o
 akm8963_dev       	//在它的驱动里(akm8963.c sensor_init)生成的
 compass		//rk sensor core在sensor_probe-->sensor_misc_device_register生成的
 
+-------------------------------------------------------------------------------------------------
+4.不支持重复insmod
+
 

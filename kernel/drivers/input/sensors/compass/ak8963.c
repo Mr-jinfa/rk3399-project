@@ -295,6 +295,16 @@ static void compass_set_YPR(int *rbuf)
 	memcpy(g_akm_rbuf, rbuf, 12 * sizeof(int));
 }
 
+static int compass_dev_open(struct inode *inode, struct file *file)
+{
+	return 0;
+}
+
+static int compass_dev_release(struct inode *inode, struct file *file)
+{
+	return 0;
+}
+
 static int compass_akm_set_mode(struct i2c_client *client, char mode)
 {
 	struct sensor_private_data *sensor = (struct sensor_private_data *)i2c_get_clientdata(this_client);
@@ -392,16 +402,6 @@ static int compass_akm_get_closestatus(void)
 	wait_event_interruptible(sensor->flags.open_wq, (atomic_read(&sensor->flags.open_flag) <= 0));
 
 	return atomic_read(&sensor->flags.open_flag);
-}
-
-static int compass_dev_open(struct inode *inode, struct file *file)
-{
-	return 0;
-}
-
-static int compass_dev_release(struct inode *inode, struct file *file)
-{
-	return 0;
 }
 
 /* ioctl - I/O control */
@@ -712,4 +712,3 @@ module_exit(compass_akm8963_exit);
 MODULE_AUTHOR("JinFa Huang <2112201069@qq.com>");
 MODULE_DESCRIPTION("ak8963 driver");
 MODULE_LICENSE("GPL");
-
