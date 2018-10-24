@@ -67,6 +67,9 @@ struct sensor_calibration_data {
 *h_list:所有sensor的list head
 */
 struct core_sensor_head {
+	struct sensor_operate *sensor_ops[SENSOR_NUM_ID];	//具体sensor的sops,供给sensor core用的
+	int sensor_probe_times[SENSOR_NUM_ID];
+
 	atomic_t sensor_no[SENSOR_NUM_TYPES -1];	//应用层可以读取该map来获悉当下core里有多少个sensor设备.
 	struct list_head h_list; 	// 内核链表(双向循环)
 };
@@ -82,14 +85,13 @@ struct core_sensor_node {
 /*连接所有sensor的head是静态的.*/
 static struct core_sensor_head head_sensor;
 
-static struct sensor_operate *sensor_ops[SENSOR_NUM_ID];	//具体sensor的sops,供给sensor core用的
-static int sensor_probe_times[SENSOR_NUM_ID];
 static struct class *sensor_class;
 static struct sensor_calibration_data sensor_cali_data;
 static struct i2c_driver sensor_driver;
 struct sensor_private_data *class_probe_accel = NULL;	//用于class_attr
 struct sensor_private_data *class_probe_gyro = NULL;	//用于class_attr
 
+static int sensor_remove(struct i2c_client *client);
 
 /*
 *功能:根据sensor 操作符的name找到并返回具体sensor
@@ -102,7 +104,7 @@ struct sensor_private_data *dev_name_entry(char *sensor_name, struct list_head *
 	struct core_sensor_node *ptr;
 	list_for_each(pos, h_list)
 	{
-		printk("=======%d=======\n", i++);
+		printk("=======[%s]:%d=======\n",__func__, i++);
 		ptr = list_entry(pos, struct core_sensor_node, n_list);
 		if(strcmp(ptr->g_sensor->miscdev.name, sensor_name) == 0) {
 			printk("[dev_name_entry] probe name:%s\n", ptr->g_sensor->miscdev.name);
@@ -111,6 +113,33 @@ struct sensor_private_data *dev_name_entry(char *sensor_name, struct list_head *
 	}
 	return NULL;
 }
+
+/*
+*根据sensor misc_dev name删除挂入head_sensor主链表的节点
+*/
+int destory_sensor_node(const char *name, struct list_head *h_list)
+{
+	int i=0;
+	struct core_sensor_node *del_node;
+	struct list_head *pos;
+	list_for_each(pos, h_list)
+	{
+		printk("=======[%s]:%d=======\n",__func__, i++);
+		del_node = list_entry(pos, struct core_sensor_node, n_list);
+		if(strcmp(del_node->g_sensor->miscdev.name, name) == 0) {
+			printk("[destory_sensor_node] delete node:%s\n", del_node->g_sensor->miscdev.name);
+			sensor_remove(del_node->g_sensor->client);
+			printk("sensor remove\n");
+			list_del(&del_node->n_list);
+			printk("sensor list_del\n");
+			kfree(del_node);
+
+			return 0;
+		}
+	}
+	return -1;
+}
+
 
 static int sensor_calibration_data_write(struct sensor_calibration_data *calibration_data)
 {
@@ -570,7 +599,7 @@ static int sensor_initial(struct i2c_client *client)
 static int sensor_chip_init(struct i2c_client *client)
 {
 	struct sensor_private_data *sensor = (struct sensor_private_data *) i2c_get_clientdata(client);
-	struct sensor_operate *ops = sensor_ops[(int)sensor->i2c_id->driver_data];
+	struct sensor_operate *ops = head_sensor.sensor_ops[(int)sensor->i2c_id->driver_data];
 	int result = 0;
 
 	if (ops) {
@@ -836,7 +865,7 @@ static long angle_dev_ioctl(struct file *file,
 	int result = 0;
 	long map_buf = 0;
 	void __user *argp = (void __user *)arg;
-	struct sensor_private_data *sensor;
+	struct sensor_private_data *sensor;	//ioctl自身应该维护一份链表,用来支持上层并发访问。
 	struct i2c_client *client;
 
 	switch (cmd)
@@ -845,7 +874,6 @@ static long angle_dev_ioctl(struct file *file,
 		{
 			map_buf = atomic_read(&head_sensor.sensor_no[SENSOR_TYPE_ANGLE]);
 			if (copy_to_user(argp, &map_buf, sizeof(map_buf))) {
-				dev_err(&client->dev, "failed to copy sensor map data to user space.\n");
 				result = -EFAULT;
 				goto error;
 			}
@@ -929,7 +957,7 @@ static long angle_dev_ioctl(struct file *file,
 		break;
 
 	default:
-		result = -ENOTTY;
+		result = 0;
 
 	goto error;
 	}
@@ -945,7 +973,7 @@ static long angle_dev_ioctl(struct file *file,
 	default:
 		break;
 	}
-
+	return 0;
 error:
 	return result;
 }
@@ -1084,7 +1112,7 @@ static long gsensor_dev_ioctl(struct file *file,
 		break;
 
 	default:
-		result = -ENOTTY;
+		result = 0;
 	goto error;
 	}
 
@@ -1099,7 +1127,7 @@ static long gsensor_dev_ioctl(struct file *file,
 	default:
 		break;
 	}
-
+	return 0;
 error:
 	return result;
 }
@@ -1201,7 +1229,7 @@ static long compass_dev_ioctl(struct file *file,
 			sensor = dev_name_entry(device_name, &head_sensor.h_list);
 			if(sensor == NULL)
 			{
-				printk("do not seek suitable sensor dev by name\n");
+				printk("[k]:do not seek suitable sensor dev by name:%s\n", device_name);
 				return -ENODEV;
 			}
 			if(sensor->type != SENSOR_TYPE_COMPASS)
@@ -1209,7 +1237,6 @@ static long compass_dev_ioctl(struct file *file,
 				printk("sensor type error\n");
 				return -ENODEV;
 			}
-			printk("okay you can operate compass dev\n");
 			client = sensor->client;
 		}
 
@@ -1224,20 +1251,7 @@ static long compass_dev_ioctl(struct file *file,
 	}
 
 	switch (cmd) {
-/*..................................................................................................................*/
-	case ECS_IOCTL_APP_OPEN:	//open.
-		if (atomic_read(&sensor->flags.open_flag) == 0) {
-			atomic_set(&sensor->flags.open_flag, 1);
-			wake_up(&sensor->flags.open_wq);
-		}
-	break;
-	case ECS_IOCTL_APP_RELEASE:	//release.
-		if (atomic_read(&sensor->flags.open_flag) == 1) {
-			atomic_set(&sensor->flags.open_flag, 0);
-			wake_up(&sensor->flags.open_wq);
-		}
-	break;
-/*..................................................................................................................*/
+
 	case ECS_IOCTL_APP_SET_MFLAG:
 	case ECS_IOCTL_APP_SET_AFLAG:
 	case ECS_IOCTL_APP_SET_MVFLAG:
@@ -1287,7 +1301,7 @@ static long compass_dev_ioctl(struct file *file,
 		flag = sensor->flags.delay;
 		break;
 	default:
-		return -ENOTTY;
+		break;
 	}
 
 	switch (cmd) {
@@ -1432,9 +1446,9 @@ static long gyro_dev_ioctl(struct file *file,
 		}
 		break;
 	default:
-		return -ENOTTY;
+		break ;
 	}
-
+	return 0;
 error:
 	return result;
 }
@@ -1576,7 +1590,7 @@ static long light_dev_ioctl(struct file *file,
 	default:
 		break;
 	}
-
+	return 0;
 error:
 	return result;
 }
@@ -1890,6 +1904,10 @@ static long pressure_dev_ioctl(struct file *file,
 	return result;
 }
 
+/*
+*不管具体sensor有没有指定私有字段misc dev、是否en_module_ko
+*在本函数正确返回后具体sensor的ops.name都会指向系统分配的name(目的为了统一管理)
+*/
 static int sensor_misc_device_register(struct sensor_private_data *sensor, int type)
 {
 	int result = 0;
@@ -2069,11 +2087,14 @@ static int sensor_misc_device_register(struct sensor_private_data *sensor, int t
 	}
 /* 注册misc成功证明该sensor有效,具体sensor没有填充miscdev,
 *那么该sensor->miscdev用来反向填充"具体sensor的私有字段 misc_dev"*/
-if(sensor->ops->misc_dev==NULL)
+if(sensor->ops->misc_dev==NULL){
 	sensor->ops->misc_dev = &sensor->miscdev;
+	sensor->ops->misc_dev->name = sensor->miscdev.name;
+}
 
 	dev_info(&sensor->client->dev, "%s:miscdevice: %s\n", __func__, sensor->miscdev.name);
 	printk("===============sensor type:%d register in rockchip sensor core=================\n", type);
+	return 0;
 error:
 	kfree(misc_name);
 	return result;
@@ -2093,8 +2114,8 @@ int sensor_register_slave(int type, struct i2c_client *client,
 
 	/*将该类型的sensor_operate填入静态的sensor core使用的数组中.
 	sensor_ops用来存放所有具体sensor的sops,这些ops是供给sensor core用的*/
-	sensor_ops[ops->id_i2c] = ops;
-	sensor_probe_times[ops->id_i2c] = 0;
+	head_sensor.sensor_ops[ops->id_i2c] = ops;
+	head_sensor.sensor_probe_times[ops->id_i2c] = 0;
 
 	/*如果当前sensor是module_ko的话就做一层i2c bus的match方法*/
 	if(ops->en_module_ko)
@@ -2107,7 +2128,7 @@ int sensor_register_slave(int type, struct i2c_client *client,
 		}
 	}
 
-	printk(KERN_INFO "%s:%s,id=%d\n", __func__, sensor_ops[ops->id_i2c]->name, ops->id_i2c);
+	printk(KERN_INFO "%s:%s,id=%d\n", __func__, head_sensor.sensor_ops[ops->id_i2c]->name, ops->id_i2c);
 
 	return result;
 }
@@ -2125,13 +2146,20 @@ int sensor_unregister_slave(int type, struct i2c_client *client,
 		return -1;
 	}
 
-	kfree(ops->misc_dev->name);	//释放由sensor_misc_device_register申请的misc_name
-/*如果是module_ko的话还需要卸载对应的杂项设备*/
-	if(ops->en_module_ko)
-		misc_deregister(ops->misc_dev);
-	printk(KERN_INFO "%s:%s,id=%d\n", __func__, sensor_ops[ops->id_i2c]->name, ops->id_i2c);
+/*如果是module_ko的话还需要卸载对应的杂项设备
+*sensor core core_sensor_head对应节点设为NULL
+*/
+	if(ops->en_module_ko){
+		if(destory_sensor_node(ops->misc_dev->name, &head_sensor.h_list) !=0)
+		{
+			printk("destory sensor node fail\n");
+			return -1;
+		}
+	}
+	kfree(ops->misc_dev->name); //释放由sensor_misc_device_register申请的misc_name
+	printk(KERN_INFO "%s:%s,id=%d\n", __func__, head_sensor.sensor_ops[ops->id_i2c]->name, ops->id_i2c);
 
-	sensor_ops[ops->id_i2c] = NULL;
+	head_sensor.sensor_ops[ops->id_i2c] = NULL;
 	return result;
 }
 EXPORT_SYMBOL(sensor_unregister_slave);
@@ -2357,9 +2385,7 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 	atomic_set(&sensor->flags.m_flag, 1);
 	atomic_set(&sensor->flags.a_flag, 1);
 	atomic_set(&sensor->flags.mv_flag, 1);
-	atomic_set(&sensor->flags.open_flag, 0);
 	atomic_set(&sensor->flags.debug_flag, 1);
-	init_waitqueue_head(&sensor->flags.open_wq);
 	sensor->flags.delay = 100;
 
 	sensor->status_cur = SENSOR_OFF;
@@ -2372,8 +2398,8 @@ int sensor_probe(struct i2c_client *client, const struct i2c_device_id *devid)
 	result = sensor_chip_init(sensor->client);
 	if (result < 0) {
 		if (reprobe_en && (result == -2)) {
-			sensor_probe_times[sensor->ops->id_i2c]++;
-			if (sensor_probe_times[sensor->ops->id_i2c] < 3)
+			head_sensor.sensor_probe_times[sensor->ops->id_i2c]++;
+			if (head_sensor.sensor_probe_times[sensor->ops->id_i2c] < 3)
 				result = -EPROBE_DEFER;
 		}
 		goto out_free_memory;
