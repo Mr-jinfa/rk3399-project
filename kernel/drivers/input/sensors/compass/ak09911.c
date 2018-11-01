@@ -31,7 +31,21 @@
 #endif
 #include <linux/sensor-dev.h>
 
-#define en_private_misc   0
+/* 传入编译的宏 */
+#include <generated/autoconf.h>
+#ifdef CONFIG_COMPASS_AK09911_MODULE
+#define module_ko      1
+#else
+#define module_ko      0
+#endif
+#ifdef CONFIG_COMPASS_AK09911_MISC
+#define private_misc   1
+#else
+#define private_misc   0
+#endif
+
+#define en_private_misc   private_misc
+
 #define SENSOR_DATA_SIZE	9
 #define YPR_DATA_SIZE		16
 #define RWBUF_SIZE			16
@@ -634,6 +648,7 @@ struct sensor_operate compass_akm09911_ops = {
 #else
 	.misc_dev			= NULL,
 #endif
+	.en_module_ko		= module_ko,
 };
 
 /****************operate according to sensor chip:end************/

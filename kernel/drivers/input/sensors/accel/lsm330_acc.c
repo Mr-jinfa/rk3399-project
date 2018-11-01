@@ -32,6 +32,13 @@
 #include <linux/earlysuspend.h>
 #endif
 #include <linux/sensor-dev.h>
+/* 传入编译的宏 */
+#include <generated/autoconf.h>
+#ifdef CONFIG_LSM330_ACC_MODULE
+#define module_ko      1
+#else
+#define module_ko      0
+#endif
 
 /* Linear acceleration  register */
 #define	WHO_AM_I_A	0x0F
@@ -240,7 +247,7 @@ struct sensor_operate gsensor_lsm330_ops = {
 	.active			= sensor_active,
 	.init				= sensor_init,
 	.report			= sensor_report_value,
-	.en_module_ko		= 1,
+	.en_module_ko		= module_ko,
 };
 
 static struct sensor_operate *gsensor_get_ops(void)

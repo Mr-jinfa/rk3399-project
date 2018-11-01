@@ -36,5 +36,14 @@ compass		//rk sensor core在sensor_probe-->sensor_misc_device_register生成的
 
 -------------------------------------------------------------------------------------------------
 4.不支持重复insmod
+解决思路根据i2c_add_driver的路线：
+i2c_add_driver-->i2c_register_driver-->driver_register-->bus_add_driver->driver_attach-->
+bus_for_each_dev--回调-->__driver_attach-->driver_probe_device-->
+
+可以观察到driver_attach路线：
+driver_attach-->bus_for_each_dev--回调-->__driver_attach-->driver_probe_device
+在driver_probe_device会检查device_is_registered(该函数里 直接返回dev->kobj.state_in_sysfs)，那么很明显卸载misc dev时将
+相应设备的state_in_sysfs字段清掉了。
+
 
 

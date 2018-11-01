@@ -30,7 +30,20 @@
 #include <linux/earlysuspend.h>
 #endif
 #include <linux/sensor-dev.h>
-#define en_private_misc   0
+/* 传入编译的宏 */
+#include <generated/autoconf.h>
+#ifdef CONFIG_COMPASS_AK8963_MODULE
+#define module_ko      1
+#else
+#define module_ko      0
+#endif
+#ifdef CONFIG_COMPASS_AK8963_MISC
+#define private_misc   1
+#else
+#define private_misc   0
+#endif
+
+#define en_private_misc   private_misc
 
 #define AKM_SENSOR_INFO_SIZE	2
 #define AKM_SENSOR_CONF_SIZE	3
@@ -678,7 +691,7 @@ struct sensor_operate compass_akm8963_ops = {
 #else
 	.misc_dev			= NULL,
 #endif
-	.en_module_ko		= 1,
+	.en_module_ko		= module_ko,
 };
 
 /****************operate according to sensor chip:end************/
