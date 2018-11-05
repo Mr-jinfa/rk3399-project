@@ -130,9 +130,7 @@ int destory_sensor_node(const char *name, struct list_head *h_list)
 		if(strcmp(del_node->g_sensor->miscdev.name, name) == 0) {
 			printk("[destory_sensor_node] delete node:%s\n", del_node->g_sensor->miscdev.name);
 			sensor_remove(del_node->g_sensor->client);
-			printk("sensor remove\n");
 			list_del(&del_node->n_list);
-			printk("sensor list_del\n");
 			kfree(del_node);
 
 			return 0;
@@ -2178,7 +2176,6 @@ if(sensor->ops->misc_dev==NULL){
 }
 
 	dev_info(&sensor->client->dev, "%s:miscdevice: %s\n", __func__, sensor->miscdev.name);
-	printk("===============sensor type:%d register in rockchip sensor core=================\n", type);
 	return 0;
 error:
 	kfree(misc_name);
@@ -2205,6 +2202,7 @@ int sensor_register_slave(int type, struct i2c_client *client,
 	/*如果当前sensor是module_ko的话就做一层i2c bus的match方法*/
 	if(ops->en_module_ko)
 	{
+		printk("===============driver_attach===============\n");
 		error = driver_attach(&sensor_driver.driver);
 		if (error)
 		{
@@ -2657,7 +2655,10 @@ static int sensor_remove(struct i2c_client *client)
 
 	sensor->stop_work = 1;
 	cancel_delayed_work_sync(&sensor->delaywork);
+
+	input_unregister_device(sensor->input_dev);
 	misc_deregister(&sensor->miscdev);
+
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	if ((sensor->ops->suspend) && (sensor->ops->resume))
 		unregister_early_suspend(&sensor->early_suspend);
