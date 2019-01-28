@@ -332,7 +332,7 @@ struct list_head	queue_node;
 unsigned int		clock;
 unsigned int		__clk_old;
 
-unsigned long		flags;
+unsigned long		flags;	//用于标识卡是否插入
 #define DW_MMC_CARD_PRESENT	0
 #define DW_MMC_CARD_NEED_INIT	1
 int			id;

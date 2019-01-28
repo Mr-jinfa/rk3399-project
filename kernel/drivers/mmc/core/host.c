@@ -336,8 +336,8 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 
 	/* scanning will be enabled when we're ready */
 	host->rescan_disable = 1;
-	idr_preload(GFP_KERNEL);
-	spin_lock(&mmc_host_lock);
+	idr_preload(GFP_KERNEL);	//这一行开始到idr_preload_end返回,期间抢占是关闭的.
+	spin_lock(&mmc_host_lock);	//加自旋锁防止另一个cpu抢占下面的临界资源.
 	err = idr_alloc(&mmc_host_idr, host, 0, 0, GFP_NOWAIT);
 	if (err >= 0)
 		host->index = err;
@@ -362,6 +362,7 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 
 	spin_lock_init(&host->lock);
 	init_waitqueue_head(&host->wq);
+//为host->detect挂一个服务函数--mmc_rescan
 	INIT_DELAYED_WORK(&host->detect, mmc_rescan);
 #ifdef CONFIG_PM
 	host->pm_notify.notifier_call = mmc_pm_notify;

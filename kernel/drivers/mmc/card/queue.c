@@ -54,7 +54,7 @@ static int mmc_queue_thread(void *d)
 	struct sched_param scheduler_params = {0};
 
 	scheduler_params.sched_priority = 1;
-
+//设置当前线程为FIFO方式的实时调度策略，先来先出防止后面的线程抢占。
 	sched_setscheduler(current, SCHED_FIFO, &scheduler_params);
 
 	current->flags |= PF_MEMALLOC;
@@ -65,17 +65,20 @@ static int mmc_queue_thread(void *d)
 		unsigned int cmd_flags = 0;
 
 		spin_lock_irq(q->queue_lock);
-		set_current_state(TASK_INTERRUPTIBLE);
-		req = blk_fetch_request(q);
-		mq->mqrq_cur->req = req;
+		set_current_state(TASK_INTERRUPTIBLE);//设置当前线程可以被信号、wake_up()唤醒
+		req = blk_fetch_request(q);	//取出一个请求
+		/*可参考本人写的ramdisk块设备驱动-ramblock_drv.c
+		*blog：https://blog.csdn.net/huang_165/article/details/86302757
+		*/
+		mq->mqrq_cur->req = req;	//设置mqrq_cur->req证明当前有人占用mmc host
 		spin_unlock_irq(q->queue_lock);
 
 		if (req || mq->mqrq_prev->req) {
 			set_current_state(TASK_RUNNING);
 			cmd_flags = req ? req->cmd_flags : 0;
-			mq->issue_fn(mq, req);
-			cond_resched();
-			if (mq->flags & MMC_QUEUE_NEW_REQUEST) {
+			mq->issue_fn(mq, req);	//调用信标
+			cond_resched();	//调度出去，调度回来时从下一条语句开始执行
+			if (mq->flags & MMC_QUEUE_NEW_REQUEST) {	//调度回来发现有新请求？
 				mq->flags &= ~MMC_QUEUE_NEW_REQUEST;
 				continue; /* fetch again */
 			}
@@ -131,7 +134,7 @@ static void mmc_request_fn(struct request_queue *q)
 
 	cntx = &mq->card->host->context_info;
 	if (!mq->mqrq_cur->req && mq->mqrq_prev->req) {
-		/*
+		/*在线程中上一个请求还没处理完
 		 * New MMC request arrived when MMC thread may be
 		 * blocked on the previous request to be complete
 		 * with no current request fetched
@@ -139,11 +142,11 @@ static void mmc_request_fn(struct request_queue *q)
 		spin_lock_irqsave(&cntx->lock, flags);
 		if (cntx->is_waiting_last_req) {
 			cntx->is_new_req = true;
-			wake_up_interruptible(&cntx->wait);
+			wake_up_interruptible(&cntx->wait);	//唤醒处理mmc上下文的tasklet
 		}
 		spin_unlock_irqrestore(&cntx->lock, flags);
 	} else if (!mq->mqrq_cur->req && !mq->mqrq_prev->req)
-		wake_up_process(mq->thread);
+		wake_up_process(mq->thread);	//唤醒线程来处理请求
 }
 
 static struct scatterlist *mmc_alloc_sg(int sg_len, int *err)
@@ -204,7 +207,7 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card,
 		limit = (u64)dma_max_pfn(mmc_dev(host)) << PAGE_SHIFT;
 
 	mq->card = card;
-	mq->queue = blk_init_queue(mmc_request_fn, lock);
+	mq->queue = blk_init_queue(mmc_request_fn, lock);	//为上层文件系统挂一个请求处理函数
 	if (!mq->queue)
 		return -ENOMEM;
 
@@ -212,6 +215,7 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card,
 	mq->mqrq_prev = mqrq_prev;
 	mq->queue->queuedata = mq;
 
+	//为请求队列挂入一个mmc_prep_request 钩子，来做执行“请求函数”之前的一些处理动作。
 	blk_queue_prep_rq(mq->queue, mmc_prep_request);
 	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, mq->queue);
 	queue_flag_clear_unlocked(QUEUE_FLAG_ADD_RANDOM, mq->queue);
@@ -292,8 +296,8 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card,
 			goto cleanup_queue;
 	}
 
-	sema_init(&mq->thread_sem, 1);
-
+	sema_init(&mq->thread_sem, 1);	//线程运行标记-信号量
+//设置一个线程，这个线程将会被请求函数唤醒。主要配合上面的信号量调用queue.issue_fn-信标
 	mq->thread = kthread_run(mmc_queue_thread, mq, "mmcqd/%d%s",
 		host->index, subname ? subname : "");
 

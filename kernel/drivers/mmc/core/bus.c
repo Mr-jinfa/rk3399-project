@@ -111,7 +111,7 @@ static int mmc_bus_probe(struct device *dev)
 {
 	struct mmc_driver *drv = to_mmc_driver(dev->driver);
 	struct mmc_card *card = mmc_dev_to_card(dev);
-
+	printk("\t%s\n", __func__);
 	return drv->probe(card);
 }
 

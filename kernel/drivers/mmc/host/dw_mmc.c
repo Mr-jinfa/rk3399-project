@@ -1537,13 +1537,13 @@ static int dw_mci_get_cd(struct mmc_host *mmc)
 		present = 1;
 	else if (!IS_ERR_VALUE(gpio_cd))
 		present = gpio_cd;
-	else
+	else//读取mmc控制器CDETECT寄存器0-代表卡存在
 		present = (mci_readl(slot->host, CDETECT) & (1 << slot->id))
 			== 0 ? 1 : 0;
 
-	spin_lock_bh(&host->lock);
+	spin_lock_bh(&host->lock);	//禁本地抢占、软中断、获取自旋锁
 	if (present) {
-		set_bit(DW_MMC_CARD_PRESENT, &slot->flags);
+		set_bit(DW_MMC_CARD_PRESENT, &slot->flags);	//设置卡有效标识
 		dev_dbg(&mmc->class_dev, "card is present\n");
 	} else {
 		clear_bit(DW_MMC_CARD_PRESENT, &slot->flags);
@@ -1646,7 +1646,7 @@ static const struct mmc_host_ops dw_mci_ops = {
 	.set_ios		= dw_mci_set_ios,
 	.set_sdio_status	= dw_mci_set_sdio_status,
 	.get_ro			= dw_mci_get_ro,
-	.get_cd			= dw_mci_get_cd,
+	.get_cd			= dw_mci_get_cd,	//检测卡是否有效
 	.enable_sdio_irq	= dw_mci_enable_sdio_irq,
 	.execute_tuning		= dw_mci_execute_tuning,
 	.card_busy		= dw_mci_card_busy,
@@ -2723,7 +2723,7 @@ static int dw_mci_init_slot(struct dw_mci *host, unsigned int id)
 	if (!mmc)
 		return -ENOMEM;
 
-	slot = mmc_priv(mmc);
+	slot = mmc_priv(mmc);	//mmc私有信息是MMC slot状态
 	slot->id = id;
 	slot->sdio_id = host->sdio_id0 + id;
 	slot->mmc = mmc;
@@ -2799,7 +2799,7 @@ static int dw_mci_init_slot(struct dw_mci *host, unsigned int id)
 		mmc->max_seg_size = mmc->max_req_size;
 	}
 
-	dw_mci_get_cd(mmc);
+	dw_mci_get_cd(mmc);	//检查下cd gpio看是否有卡插入
 
 	ret = mmc_add_host(mmc);
 	if (ret)
@@ -3248,7 +3248,7 @@ static void dw_mci_enable_cd(struct dw_mci *host)
 
 	spin_lock_irqsave(&host->irq_lock, irqflags);
 	temp = mci_readl(host, INTMASK);
-	temp  |= SDMMC_INT_CD;
+	temp  |= SDMMC_INT_CD;	//将数据忙这个中断掩盖掉(DAT0低数据忙)，因为还没检测到卡DAT0有可能一直为低(猜测)
 	mci_writel(host, INTMASK, temp);
 	spin_unlock_irqrestore(&host->irq_lock, irqflags);
 }
@@ -3427,7 +3427,7 @@ int dw_mci_probe(struct dw_mci *host)
 		host->fifo_reg = host->regs + DATA_OFFSET;
 	else
 		host->fifo_reg = host->regs + DATA_240A_OFFSET;
-
+//为host->tasklet挂一个tasklet作dw_mci_interrupt中断下半部处理isr
 	tasklet_init(&host->tasklet, dw_mci_tasklet_func, (unsigned long)host);
 	ret = devm_request_irq(host->dev, host->irq, dw_mci_interrupt,
 			       host->irq_flags, "dw-mci", host);

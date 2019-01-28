@@ -8,6 +8,10 @@
 #ifndef _MMC_CORE_PWRSEQ_H
 #define _MMC_CORE_PWRSEQ_H
 
+/*
+*用于控制MMC系统的供电
+*其钩子的实体由pwrseq.c提供
+*/
 struct mmc_pwrseq_ops {
 	void (*pre_power_on)(struct mmc_host *host);
 	void (*post_power_on)(struct mmc_host *host);

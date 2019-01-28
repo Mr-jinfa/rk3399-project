@@ -1853,6 +1853,7 @@ static void mmc_blk_rw_rq_prep(struct mmc_queue_req *mqrq,
 
 	mmc_set_data_timeout(&brq->data, card);
 
+	//填充内存区域的描述链表供给mmc控制器的dma使用
 	brq->data.sg = mqrq->sg;
 	brq->data.sg_len = mmc_queue_map_sg(mq, mqrq);
 
@@ -2229,11 +2230,11 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 				mmc_blk_packed_hdr_wrq_prep(mq->mqrq_cur,
 							    card, mq);
 			else
-				mmc_blk_rw_rq_prep(mq->mqrq_cur, card, 0, mq);
+				mmc_blk_rw_rq_prep(mq->mqrq_cur, card, 0, mq);	//做些准备工作
 			areq = &mq->mqrq_cur->mmc_active;
 		} else
 			areq = NULL;
-		areq = mmc_start_req(card->host, areq, (int *) &status);
+		areq = mmc_start_req(card->host, areq, (int *) &status);	//启动传输
 		if (!areq) {
 			if (status == MMC_BLK_NEW_REQUEST)
 				mq->flags |= MMC_QUEUE_NEW_REQUEST;
@@ -2279,7 +2280,7 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 			break;
 		case MMC_BLK_CMD_ERR:
 			ret = mmc_blk_cmd_err(md, card, brq, req, ret);
-			if (mmc_blk_reset(md, card->host, type))
+			if (mmc_blk_reset(md, card->host, type))	//将mmc控制器复位
 				goto cmd_abort;
 			if (!ret)
 				goto start_new_req;
@@ -2290,7 +2291,7 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 				break;
 			/* Fall through */
 		case MMC_BLK_ABORT:
-			if (!mmc_blk_reset(md, card->host, type))
+			if (!mmc_blk_reset(md, card->host, type))	//超过5次也要复位mmc控制器
 				break;
 			goto cmd_abort;
 		case MMC_BLK_DATA_ERR: {
@@ -2342,6 +2343,7 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 				/*
 				 * In case of a incomplete request
 				 * prepare it again and resend.
+				 *如果请求不完整，请重新准备并发送。
 				 */
 				mmc_blk_rw_rq_prep(mq_rq, card,
 						disable_multi, mq);
@@ -2399,17 +2401,17 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 		/* claim host only for the first request */
 		mmc_get_card(card);
 
-	ret = mmc_blk_part_switch(card, md);
+	ret = mmc_blk_part_switch(card, md);	//选择对应的分区
 	if (ret) {
 		if (req) {
-			blk_end_request_all(req, -EIO);
+			blk_end_request_all(req, -EIO);	//没空间的话为上层返回一个-EIO
 		}
 		ret = 0;
 		goto out;
 	}
 
 	mq->flags &= ~MMC_QUEUE_NEW_REQUEST;
-	if (cmd_flags & REQ_DISCARD) {
+	if (cmd_flags & REQ_DISCARD) {	//禁用卡
 		/* complete ongoing async transfer before issuing discard */
 		if (card->host->areq)
 			mmc_blk_issue_rw_rq(mq, NULL);
@@ -2417,17 +2419,19 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 			ret = mmc_blk_issue_secdiscard_rq(mq, req);
 		else
 			ret = mmc_blk_issue_discard_rq(mq, req);
-	} else if (cmd_flags & REQ_FLUSH) {
+	} else if (cmd_flags & REQ_FLUSH) {	//冲洗卡-系统缓存的数据回写到卡中
 		/* complete ongoing async transfer before issuing flush */
 		if (card->host->areq)
 			mmc_blk_issue_rw_rq(mq, NULL);
 		ret = mmc_blk_issue_flush(mq, req);
 	} else {
 		if (!req && host->areq) {
+		//当前并无一个有效的req,但需要一个同步request
 			spin_lock_irqsave(&host->context_info.lock, flags);
-			host->context_info.is_waiting_last_req = true;
+			host->context_info.is_waiting_last_req = true;	//告知 Generic MMC request handler这里还有一个未完成的请求
 			spin_unlock_irqrestore(&host->context_info.lock, flags);
 		}
+		//rw这个request
 		ret = mmc_blk_issue_rw_rq(mq, req);
 	}
 
@@ -2493,7 +2497,7 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 	if (ret)
 		goto err_putdisk;
 
-	md->queue.issue_fn = mmc_blk_issue_rq;
+	md->queue.issue_fn = mmc_blk_issue_rq;	//设置处理请求的函数-信标
 	md->queue.data = md;
 
 	md->disk->major	= MMC_BLOCK_MAJOR;
@@ -2854,6 +2858,7 @@ static int mmc_blk_probe(struct mmc_card *card)
 		return -ENODEV;
 
 	mmc_fixup_device(card, blk_fixups);
+	printk("\t%s\n", __func__);
 
 	md = mmc_blk_alloc(card);
 	if (IS_ERR(md))
@@ -2861,11 +2866,11 @@ static int mmc_blk_probe(struct mmc_card *card)
 
 	string_get_size((u64)get_capacity(md->disk), 512, STRING_UNITS_2,
 			cap_str, sizeof(cap_str));
-	pr_info("%s: %s %s %s %s\n",
+	printk("%s: %s %s %s %s\n",
 		md->disk->disk_name, mmc_card_id(card), mmc_card_name(card),
 		cap_str, md->read_only ? "(ro)" : "");
 
-	if (mmc_blk_alloc_parts(card, md))
+	if (mmc_blk_alloc_parts(card, md))	//设置分区的格式
 		goto out;
 
 	dev_set_drvdata(&card->dev, md);
@@ -2883,7 +2888,7 @@ static int mmc_blk_probe(struct mmc_card *card)
 		goto out;
 
 	list_for_each_entry(part_md, &md->part, part) {
-		if (mmc_add_disk(part_md))
+		if (mmc_add_disk(part_md))	//分配分区
 			goto out;
 	}
 

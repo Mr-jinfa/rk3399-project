@@ -1894,6 +1894,14 @@ void mmc_detach_bus(struct mmc_host *host)
 	mmc_bus_put(host);
 }
 
+/*
+*功能：主动检测下卡有无插入,内部实现机制是
+*主动切换出去执行host->detect work，让系统检查卡是否存在。
+*当然了，由于之前挂了一个用于卡热插拔的中断isr，这个isr也会调用到本函数
+*建议读者请关注下：
+*host->detect work即INIT_DELAYED_WORK(&host->detect, mmc_rescan)-->
+*					host->ops->get_cd：dw_mci_get_cd
+*/
 static void _mmc_detect_change(struct mmc_host *host, unsigned long delay,
 				bool cd_irq)
 {
@@ -1909,11 +1917,11 @@ static void _mmc_detect_change(struct mmc_host *host, unsigned long delay,
 	 * 5 s to give provision for user space to consume the event.
 	 */
 	if (cd_irq && !(host->caps & MMC_CAP_NEEDS_POLL) &&
-		device_can_wakeup(mmc_dev(host)))
+		device_can_wakeup(mmc_dev(host)))	//sd卡cd gpio具有唤醒cpu功能?
 		pm_wakeup_event(mmc_dev(host), 5000);
 
 	host->detect_change = 1;
-	mmc_schedule_delayed_work(&host->detect, delay);
+	mmc_schedule_delayed_work(&host->detect, delay);	//切换出去
 }
 
 /**
@@ -2671,7 +2679,7 @@ void mmc_rescan(struct work_struct *work)
 	mmc_bus_put(host);
 
 	if (!(host->caps & MMC_CAP_NONREMOVABLE) && host->ops->get_cd &&
-			host->ops->get_cd(host) == 0) {
+			host->ops->get_cd(host) == 0) {//先检查下cd gpio确定是否位卡插入电平
 		mmc_claim_host(host);
 		mmc_power_off(host);
 		mmc_release_host(host);
@@ -2680,6 +2688,7 @@ void mmc_rescan(struct work_struct *work)
 
 	mmc_claim_host(host);
 	for (i = 0; i < ARRAY_SIZE(freqs); i++) {
+	//最终调用这个函数来确认sd卡的插入与否
 		if (!mmc_rescan_try_freq(host, max(freqs[i], host->f_min)))
 			break;
 		if (freqs[i] <= host->f_min)
@@ -2698,6 +2707,7 @@ void mmc_start_host(struct mmc_host *host)
 	host->rescan_disable = 0;
 	host->ios.power_mode = MMC_POWER_UNDEFINED;
 
+	//下条语句进入host->wq等待队列。检查下当前host是否被占用(即当前是否有sd卡在使用)，有就切换出去。等待别人唤醒。
 	mmc_claim_host(host);
 	if (host->caps2 & MMC_CAP2_NO_PRESCAN_POWERUP)
 		mmc_power_off(host);
@@ -2705,8 +2715,8 @@ void mmc_start_host(struct mmc_host *host)
 		mmc_power_up(host, host->ocr_avail);
 	mmc_release_host(host);
 
-	mmc_gpiod_request_cd_irq(host);
-	_mmc_detect_change(host, 0, false);
+	mmc_gpiod_request_cd_irq(host);	//为cd_gpio挂一个中断isr，方便以后有卡插入能第一时间探测到.
+	_mmc_detect_change(host, 0, false);	//主动检测下卡有无插入
 }
 
 void mmc_stop_host(struct mmc_host *host)
