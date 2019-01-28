@@ -2870,7 +2870,7 @@ static int mmc_blk_probe(struct mmc_card *card)
 		md->disk->disk_name, mmc_card_id(card), mmc_card_name(card),
 		cap_str, md->read_only ? "(ro)" : "");
 
-	if (mmc_blk_alloc_parts(card, md))	//设置分区的格式
+	if (mmc_blk_alloc_parts(card, md))	//设置分区个数
 		goto out;
 
 	dev_set_drvdata(&card->dev, md);
